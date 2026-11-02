@@ -1,12 +1,22 @@
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { TrendingUp, TrendingDown, Minus, BarChart3, PieChart as PieChartIcon, Calendar, Lightbulb, X } from 'lucide-react';
+import {
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  BarChart3,
+  PieChart as PieChartIcon,
+  Calendar,
+  Lightbulb,
+  X,
+  Target,
+} from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid } from 'recharts';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
 import { getCurrentMonth, getPreviousMonth, getCurrentWeek, getCurrentYear, formatDateShort } from '../utils/date';
-import { calculateMetrics, generateInsightCards } from '../utils/insights';
+import { calculateMetrics, generateInsightCards, calculatePlanVsActualBreakdown } from '../utils/insights';
 import { useSettings } from '../contexts/SettingsContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import type { DateRange } from '../utils/date';
@@ -20,6 +30,8 @@ export default function InsightsScreen() {
 
   const categories = useLiveQuery(() => db.categories.toArray()) ?? [];
   const paymentMethods = useLiveQuery(() => db.paymentMethods.toArray()) ?? [];
+  const plannedItems = useLiveQuery(() => db.plannedItems.toArray()) ?? [];
+  const budgets = useLiveQuery(() => db.budgets.toArray()) ?? [];
 
   const range: DateRange = useMemo(() => {
     switch (period) {
@@ -59,8 +71,13 @@ export default function InsightsScreen() {
   );
 
   const insightCards = useMemo(
-    () => generateInsightCards(metrics, categories, range, transactions, prevMetrics).filter(c => !dismissedCards.has(c.id)),
-    [metrics, categories, range, transactions, prevMetrics, dismissedCards]
+    () => generateInsightCards(metrics, categories, range, transactions, prevMetrics, plannedItems, budgets).filter(c => !dismissedCards.has(c.id)),
+    [metrics, categories, range, transactions, prevMetrics, plannedItems, budgets, dismissedCards]
+  );
+
+  const planVsActual = useMemo(
+    () => calculatePlanVsActualBreakdown(plannedItems, budgets, transactions, categories, range),
+    [plannedItems, budgets, transactions, categories, range]
   );
 
   const catMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories]);
@@ -270,6 +287,84 @@ export default function InsightsScreen() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Plan vs Actual Category Breakdown */}
+      {planVsActual.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <Target size={16} className="text-indigo-500" /> Plan vs Actual
+            </h3>
+            <span className="text-[11px] text-gray-400 font-medium">
+              {planVsActual.filter(p => p.plannedPaise > 0).length} planned
+            </span>
+          </div>
+
+          <div className="space-y-3">
+            {planVsActual.map(item => {
+              const pct = item.plannedPaise > 0 ? Math.round((item.spentPaise / item.plannedPaise) * 100) : 0;
+              const isOver = item.status === 'over';
+              const isUnder = item.status === 'under';
+
+              return (
+                <div key={item.categoryId} className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                        style={{ backgroundColor: item.categoryColor + '20' }}
+                      >
+                        <DynamicIcon name={item.categoryIcon} size={14} style={{ color: item.categoryColor }} />
+                      </div>
+                      <div>
+                        <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
+                          {item.categoryName}
+                        </span>
+                        <div className="text-[10px] text-gray-400">
+                          Planned: {formatINR(item.plannedPaise)} · Spent: {formatINR(item.spentPaise)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      {item.plannedPaise > 0 ? (
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                            isOver
+                              ? 'bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400'
+                              : isUnder
+                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400'
+                              : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                          }`}
+                        >
+                          {isOver
+                            ? `+${formatINR(item.variancePaise)} (${pct}%)`
+                            : `-${formatINR(Math.abs(item.variancePaise))} (${pct}%)`}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-semibold text-gray-400">Unbudgeted</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {item.plannedPaise > 0 && (
+                    <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${Math.min(pct, 100)}%` }}
+                        transition={{ duration: 0.6 }}
+                        className={`h-full rounded-full ${
+                          pct > 100 ? 'bg-red-500' : pct > 75 ? 'bg-amber-500' : 'bg-emerald-500'
+                        }`}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

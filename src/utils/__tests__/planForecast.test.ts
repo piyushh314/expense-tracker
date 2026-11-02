@@ -9,7 +9,8 @@ import {
   calculateAffordability,
   suggestEstimateAmount,
 } from '../planForecast';
-import type { PlannedItem } from '../../types';
+import { generateInsightCards, calculatePlanVsActualBreakdown } from '../insights';
+import type { PlannedItem, Category, Transaction } from '../../types';
 
 describe('Plan Forecast & Recurring Calculation Utilities', () => {
   describe('Acceptance Tests from Specification', () => {
@@ -328,6 +329,194 @@ describe('Plan Forecast & Recurring Calculation Utilities', () => {
       // Leftover = 30,000 - 39,000 = -9,000 -> Deficit!
       expect(forecast.projectedLeftoverPaise).toBe(-9000 * 100);
       expect(forecast.isDeficit).toBe(true);
+    });
+  });
+
+  describe('Step 5 Plan Insights Tests', () => {
+    const mockCategories: Category[] = [
+      { id: 'cat-food', name: 'Food', icon: 'UtensilsCrossed', color: '#F97316', order: 1, archived: false, type: 'expense' },
+      { id: 'cat-bills', name: 'Bills', icon: 'Zap', color: '#6366F1', order: 2, archived: false, type: 'expense' },
+    ];
+
+    it('generates Plan vs Actual insight: "You planned 4,000 for food and spent 4,700."', () => {
+      const plannedFood: PlannedItem = {
+        id: 'plan-food',
+        title: 'Monthly Groceries & Food',
+        amount: 4000 * 100,
+        amountType: 'exact',
+        dueDate: '2026-03-10',
+        categoryId: 'cat-food',
+        repeat: 'monthly',
+        reminderDaysBefore: 3,
+        note: '',
+        status: 'upcoming',
+        kind: 'bill',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      const txns: Transaction[] = [
+        {
+          id: 't1',
+          type: 'expense',
+          amount: 4700 * 100,
+          totalPaise: 4700 * 100,
+          mySharePaise: 4700 * 100,
+          categoryId: 'cat-food',
+          paymentMethodId: 'pm-1',
+          date: '2026-03-05',
+          note: 'Swiggy and supermarket',
+          tags: [],
+          scope: 'personal',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ];
+
+      const range = { from: '2026-03-01', to: '2026-03-31' };
+      const breakdown = calculatePlanVsActualBreakdown([plannedFood], [], txns, mockCategories, range);
+
+      expect(breakdown.length).toBe(1);
+      expect(breakdown[0].categoryName).toBe('Food');
+      expect(breakdown[0].plannedPaise).toBe(4000 * 100);
+      expect(breakdown[0].spentPaise).toBe(4700 * 100);
+      expect(breakdown[0].variancePaise).toBe(700 * 100);
+
+      const cards = generateInsightCards(
+        {
+          totalSpent: 4700 * 100,
+          totalIncome: 0,
+          transactionCount: 1,
+          averagePerDay: 4700 * 100,
+          biggestExpense: txns[0],
+          topCategory: { categoryId: 'cat-food', amount: 4700 * 100, percentage: 100 },
+          byCategory: [{ categoryId: 'cat-food', amount: 4700 * 100, percentage: 100 }],
+          byPaymentMethod: [],
+          byWeekday: [],
+          dailySpend: [],
+        },
+        mockCategories,
+        range,
+        txns,
+        undefined,
+        [plannedFood],
+        []
+      );
+
+      const planCard = cards.find(c => c.type === 'plan-vs-actual');
+      expect(planCard).toBeDefined();
+      expect(planCard?.message).toContain('You planned ₹4,000 for food and spent ₹4,700.');
+    });
+
+    it('generates Estimate Variance insight: "Electricity was 17% above your estimate."', () => {
+      // Planned: 1,800, Paid: 2,100 -> diff = +300 -> 300 / 1800 = 16.666% -> 17%
+      const paidElectricity: PlannedItem = {
+        id: 'plan-elec',
+        title: 'Electricity',
+        amount: 1800 * 100,
+        actualAmount: 2100 * 100,
+        amountType: 'estimate',
+        dueDate: '2026-03-20',
+        categoryId: 'cat-bills',
+        repeat: 'monthly',
+        reminderDaysBefore: 3,
+        note: '',
+        status: 'paid',
+        kind: 'bill',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      const range = { from: '2026-03-01', to: '2026-03-31' };
+      const cards = generateInsightCards(
+        {
+          totalSpent: 2100 * 100,
+          totalIncome: 0,
+          transactionCount: 1,
+          averagePerDay: 2100 * 100,
+          biggestExpense: null,
+          topCategory: null,
+          byCategory: [],
+          byPaymentMethod: [],
+          byWeekday: [],
+          dailySpend: [],
+        },
+        mockCategories,
+        range,
+        [],
+        undefined,
+        [paidElectricity],
+        []
+      );
+
+      const estimateCard = cards.find(c => c.type === 'estimate-variance');
+      expect(estimateCard).toBeDefined();
+      expect(estimateCard?.message).toBe('Electricity was 17% above your estimate.');
+    });
+
+    it('generates Upcoming Bills insight: "Upcoming bills in the next 30 days: ₹5,200."', () => {
+      const nextWeekD = new Date();
+      nextWeekD.setDate(nextWeekD.getDate() + 7);
+      const nextWeekStr = nextWeekD.toISOString().split('T')[0];
+
+      const upcomingBills: PlannedItem[] = [
+        {
+          id: 'b1',
+          title: 'Rent',
+          amount: 4000 * 100,
+          amountType: 'exact',
+          dueDate: nextWeekStr,
+          categoryId: 'cat-bills',
+          repeat: 'monthly',
+          reminderDaysBefore: 3,
+          note: '',
+          status: 'upcoming',
+          kind: 'bill',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: 'b2',
+          title: 'Internet',
+          amount: 1200 * 100,
+          amountType: 'exact',
+          dueDate: nextWeekStr,
+          categoryId: 'cat-bills',
+          repeat: 'monthly',
+          reminderDaysBefore: 3,
+          note: '',
+          status: 'upcoming',
+          kind: 'bill',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ];
+
+      const range = { from: '2026-03-01', to: '2026-03-31' };
+      const cards = generateInsightCards(
+        {
+          totalSpent: 0,
+          totalIncome: 0,
+          transactionCount: 0,
+          averagePerDay: 0,
+          biggestExpense: null,
+          topCategory: null,
+          byCategory: [],
+          byPaymentMethod: [],
+          byWeekday: [],
+          dailySpend: [],
+        },
+        mockCategories,
+        range,
+        [],
+        undefined,
+        upcomingBills,
+        []
+      );
+
+      const billsCard = cards.find(c => c.type === 'upcoming-bills');
+      expect(billsCard).toBeDefined();
+      expect(billsCard?.message).toBe('Upcoming bills in the next 30 days: ₹5,200.');
     });
   });
 });

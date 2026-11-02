@@ -1,8 +1,20 @@
-import type { Transaction, Category, InsightCard } from '../types';
+import type { Transaction, Category, InsightCard, PlannedItem, Budget } from '../types';
 import type { DateRange } from './date';
-import { getDaysInRange, getWeekdayIndex, getDaysRemaining } from './date';
+import { getDaysInRange, getWeekdayIndex, getDaysRemaining, today } from './date';
 import { formatINR } from './money';
 import { getEffectiveExpensePaise } from './peopleLedger';
+
+export interface CategoryPlanVsActual {
+  categoryId: string;
+  categoryName: string;
+  categoryIcon: string;
+  categoryColor: string;
+  plannedPaise: number;
+  spentPaise: number;
+  variancePaise: number; // spent - planned (positive = overspent)
+  variancePct: number;
+  status: 'over' | 'under' | 'on_track';
+}
 
 export interface PeriodMetrics {
   totalSpent: number;
@@ -100,11 +112,100 @@ export function generateInsightCards(
   categories: Category[],
   range: DateRange,
   transactions: Transaction[],
-  prevMetrics?: PeriodMetrics
+  prevMetrics?: PeriodMetrics,
+  plannedItems?: PlannedItem[],
+  budgets?: Budget[]
 ): InsightCard[] {
   const cards: InsightCard[] = [];
   const catMap = new Map(categories.map(c => [c.id, c]));
   let id = 0;
+
+  // Upcoming bills in next 30 days insight
+  if (plannedItems && plannedItems.length > 0) {
+    const todayStr = today();
+    const d30 = new Date(todayStr + 'T00:00:00');
+    d30.setDate(d30.getDate() + 30);
+    const thirtyDaysStr = d30.toISOString().split('T')[0];
+
+    const upcoming30Bills = plannedItems.filter(
+      i =>
+        i.status === 'upcoming' &&
+        (i.kind === 'bill' || i.kind === 'one_off') &&
+        i.dueDate >= todayStr &&
+        i.dueDate <= thirtyDaysStr
+    );
+    const totalUpcoming30Paise = upcoming30Bills.reduce((s, i) => s + i.amount, 0);
+
+    if (totalUpcoming30Paise > 0) {
+      cards.push({
+        id: `insight-${id++}`,
+        type: 'upcoming-bills',
+        title: 'Upcoming Bills',
+        message: `Upcoming bills in the next 30 days: ${formatINR(totalUpcoming30Paise)}.`,
+        icon: 'CalendarClock',
+        trend: 'neutral',
+        dismissed: false,
+      });
+    }
+  }
+
+  // Estimate variance insight
+  if (plannedItems && plannedItems.length > 0) {
+    const paidEstimates = plannedItems.filter(
+      i =>
+        i.status === 'paid' &&
+        i.amountType === 'estimate' &&
+        i.actualAmount !== undefined &&
+        i.actualAmount > 0 &&
+        i.dueDate >= range.from &&
+        i.dueDate <= range.to
+    );
+
+    for (const item of paidEstimates) {
+      const planned = item.amount;
+      const actual = item.actualAmount!;
+      const diff = actual - planned;
+      const pct = Math.round((Math.abs(diff) / planned) * 100);
+
+      if (pct >= 10) {
+        const direction = diff > 0 ? 'above' : 'below';
+        cards.push({
+          id: `insight-${id++}`,
+          type: 'estimate-variance',
+          title: 'Estimate Variance',
+          message: `${item.title} was ${pct}% ${direction} your estimate.`,
+          icon: 'Sparkles',
+          trend: diff > 0 ? 'up' : 'down',
+          dismissed: false,
+        });
+      }
+    }
+  }
+
+  // Plan vs actual category insight
+  if ((plannedItems && plannedItems.length > 0) || (budgets && budgets.length > 0)) {
+    const breakdown = calculatePlanVsActualBreakdown(
+      plannedItems || [],
+      budgets || [],
+      transactions,
+      categories,
+      range
+    );
+
+    const significant = breakdown.filter(b => b.plannedPaise > 0 && Math.abs(b.variancePaise) >= 10000); // >= ₹100 diff
+    if (significant.length > 0) {
+      const topDiff = significant.sort((a, b) => Math.abs(b.variancePaise) - Math.abs(a.variancePaise))[0];
+      cards.push({
+        id: `insight-${id++}`,
+        type: 'plan-vs-actual',
+        title: `Plan vs Actual: ${topDiff.categoryName}`,
+        message: `You planned ${formatINR(topDiff.plannedPaise)} for ${topDiff.categoryName.toLowerCase()} and spent ${formatINR(topDiff.spentPaise)}.`,
+        icon: topDiff.categoryIcon || 'Target',
+        trend: topDiff.variancePaise > 0 ? 'up' : 'down',
+        dismissed: false,
+      });
+    }
+  }
 
   // Top category insight
   if (metrics.topCategory) {
@@ -206,4 +307,83 @@ export function getKeywordFrequency(transactions: Transaction[]): Array<{ keywor
     .filter(k => k.count >= 2)
     .sort((a, b) => b.count - a.count)
     .slice(0, 20);
+}
+
+export function calculatePlanVsActualBreakdown(
+  plannedItems: PlannedItem[],
+  budgets: Budget[],
+  transactions: Transaction[],
+  categories: Category[],
+  range: DateRange
+): CategoryPlanVsActual[] {
+  const catMap = new Map(categories.map(c => [c.id, c]));
+  const period = range.from.slice(0, 7); // YYYY-MM
+
+  // 1. Calculate actual spending per category in range
+  const spentByCat = new Map<string, number>();
+  transactions
+    .filter(t => t.type === 'expense' && t.date >= range.from && t.date <= range.to)
+    .forEach(t => {
+      spentByCat.set(t.categoryId, (spentByCat.get(t.categoryId) || 0) + getEffectiveExpensePaise(t));
+    });
+
+  // 2. Calculate planned per category (budget or planned items in range)
+  const budgetByCat = new Map<string, number>();
+  budgets
+    .filter(b => b.period === period && b.categoryId)
+    .forEach(b => {
+      budgetByCat.set(b.categoryId!, b.amount);
+    });
+
+  const plannedItemsByCat = new Map<string, number>();
+  plannedItems
+    .filter(
+      i =>
+        (i.kind === 'bill' || i.kind === 'one_off') &&
+        i.status !== 'skipped' &&
+        i.dueDate >= range.from &&
+        i.dueDate <= range.to
+    )
+    .forEach(i => {
+      plannedItemsByCat.set(i.categoryId, (plannedItemsByCat.get(i.categoryId) || 0) + i.amount);
+    });
+
+  // Collect all category IDs with spending or planning
+  const relevantCatIds = new Set<string>();
+  spentByCat.forEach((_, id) => relevantCatIds.add(id));
+  budgetByCat.forEach((_, id) => relevantCatIds.add(id));
+  plannedItemsByCat.forEach((_, id) => relevantCatIds.add(id));
+
+  const results: CategoryPlanVsActual[] = [];
+
+  relevantCatIds.forEach(catId => {
+    const cat = catMap.get(catId);
+    if (!cat || cat.type === 'income') return;
+
+    const budgetAmt = budgetByCat.get(catId) || 0;
+    const itemsAmt = plannedItemsByCat.get(catId) || 0;
+    const plannedPaise = budgetAmt > 0 ? budgetAmt : itemsAmt;
+    const spentPaise = spentByCat.get(catId) || 0;
+
+    if (plannedPaise === 0 && spentPaise === 0) return;
+
+    const variancePaise = spentPaise - plannedPaise;
+    const variancePct = plannedPaise > 0 ? Math.round((variancePaise / plannedPaise) * 100) : 0;
+    const status: CategoryPlanVsActual['status'] =
+      variancePaise > 0 ? 'over' : variancePaise < 0 ? 'under' : 'on_track';
+
+    results.push({
+      categoryId: catId,
+      categoryName: cat.name,
+      categoryIcon: cat.icon,
+      categoryColor: cat.color,
+      plannedPaise,
+      spentPaise,
+      variancePaise,
+      variancePct,
+      status,
+    });
+  });
+
+  return results.sort((a, b) => b.spentPaise - a.spentPaise);
 }

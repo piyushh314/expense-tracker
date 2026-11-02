@@ -6,7 +6,7 @@ import { v4 as uuid } from 'uuid';
 import { db } from '../db';
 import { useSettings } from '../contexts/SettingsContext';
 import { useToast } from '../contexts/ToastContext';
-import { exportBackup, importBackup, exportCSV, downloadFile } from '../utils/exportImport';
+import { exportBackup, importBackup, exportCSV, exportPlanCSV, downloadFile } from '../utils/exportImport';
 import { loadDemoData } from '../utils/demoData';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import type { Category, PaymentMethod, ThemeMode } from '../types';
@@ -58,6 +58,16 @@ export default function SettingsScreen() {
     const date = new Date().toISOString().split('T')[0];
     downloadFile(csv, `expenses-${date}.csv`, 'text/csv');
     showToast('CSV exported successfully');
+  };
+
+  const handleExportPlanCSV = async () => {
+    const planned = await db.plannedItems.toArray();
+    const categories = await db.categories.toArray();
+    const paymentMethods = await db.paymentMethods.toArray();
+    const csv = exportPlanCSV(planned, categories, paymentMethods);
+    const date = new Date().toISOString().split('T')[0];
+    downloadFile(csv, `plan-${date}.csv`, 'text/csv');
+    showToast('Plan CSV exported successfully');
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,9 +164,10 @@ export default function SettingsScreen() {
       db.settlements.clear(),
       db.ledgerReminders.clear(),
       db.savingsGoals.clear(),
+      db.plannedItems.clear(),
     ]);
     setShowDeleteConfirm(false);
-    showToast('All transaction and ledger data cleared');
+    showToast('All transaction, plan, and ledger data cleared');
   };
 
   const themeOptions: { mode: ThemeMode; icon: typeof Sun; label: string }[] = [
@@ -374,6 +385,11 @@ export default function SettingsScreen() {
             className="w-full bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800 flex items-center gap-3 text-left hover:border-gray-200 transition-all">
             <Download size={18} className="text-indigo-500" />
             <div><p className="text-sm font-semibold">Export CSV</p><p className="text-xs text-gray-500">Download transactions as spreadsheet</p></div>
+          </button>
+          <button onClick={handleExportPlanCSV}
+            className="w-full bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800 flex items-center gap-3 text-left hover:border-gray-200 transition-all">
+            <Download size={18} className="text-purple-500" />
+            <div><p className="text-sm font-semibold">Export Plan CSV</p><p className="text-xs text-gray-500">Download upcoming bills and recurring plans</p></div>
           </button>
           <button onClick={handleExportJSON}
             className="w-full bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800 flex items-center gap-3 text-left hover:border-gray-200 transition-all">

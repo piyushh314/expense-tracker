@@ -11,6 +11,8 @@ import {
   Calendar,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   RotateCcw,
   Sparkles,
   Target,
@@ -42,7 +44,7 @@ import QuickAdd from '../components/QuickAdd';
 import CanIAffordThis from '../components/plan/CanIAffordThis';
 import type { PlannedItem, Budget } from '../types';
 
-type PlanTab = 'timeline' | 'budgets';
+type PlanTab = 'timeline' | 'calendar' | 'budgets';
 
 export default function PlanScreen() {
   const { settings, updateSettings } = useSettings();
@@ -54,6 +56,12 @@ export default function PlanScreen() {
   const [editingItem, setEditingItem] = useState<PlannedItem | null>(null);
   const [quickAddPlannedItem, setQuickAddPlannedItem] = useState<PlannedItem | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [initialDueDateForAdd, setInitialDueDateForAdd] = useState<string | undefined>(undefined);
+
+  // Calendar states
+  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth());
+  const [selectedDate, setSelectedDate] = useState(() => today());
 
   // Budget editing states
   const [showOverallEdit, setShowOverallEdit] = useState(false);
@@ -204,6 +212,121 @@ export default function PlanScreen() {
     settings.startingBalance,
     settings.monthlyIncome,
   ]);
+
+  // Map items by due date for calendar
+  const itemsByDate = useMemo(() => {
+    const map = new Map<string, PlannedItem[]>();
+    allPlannedItems.forEach(item => {
+      const list = map.get(item.dueDate) || [];
+      list.push(item);
+      map.set(item.dueDate, list);
+    });
+    return map;
+  }, [allPlannedItems]);
+
+  const selectedDayItems = useMemo(() => {
+    return itemsByDate.get(selectedDate) || [];
+  }, [itemsByDate, selectedDate]);
+
+  const calendarData = useMemo(() => {
+    const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+    const firstDayOfWeekIndex = new Date(calendarYear, calendarMonth, 1).getDay(); // 0 is Sun
+    const startOffset = (firstDayOfWeekIndex - settings.firstDayOfWeek + 7) % 7;
+    const prevMonthDaysCount = new Date(calendarYear, calendarMonth, 0).getDate();
+
+    // Weekday labels based on settings.firstDayOfWeek
+    const baseWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const weekdays = [
+      ...baseWeekdays.slice(settings.firstDayOfWeek),
+      ...baseWeekdays.slice(0, settings.firstDayOfWeek),
+    ];
+
+    // Leading padding days from previous month
+    const paddingDays: { day: number; dateStr: string; isCurrentMonth: boolean }[] = [];
+    for (let i = startOffset - 1; i >= 0; i--) {
+      const d = prevMonthDaysCount - i;
+      const prevM = calendarMonth === 0 ? 12 : calendarMonth;
+      const prevY = calendarMonth === 0 ? calendarYear - 1 : calendarYear;
+      paddingDays.push({
+        day: d,
+        dateStr: `${prevY}-${String(prevM).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        isCurrentMonth: false,
+      });
+    }
+
+    // Days in current month
+    const currentMonthDays: { day: number; dateStr: string; isCurrentMonth: boolean }[] = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      currentMonthDays.push({
+        day: d,
+        dateStr: `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        isCurrentMonth: true,
+      });
+    }
+
+    // Trailing padding days to fill 7-column rows
+    const totalCells = paddingDays.length + currentMonthDays.length;
+    const trailingCount = (7 - (totalCells % 7)) % 7;
+    const trailingDays: { day: number; dateStr: string; isCurrentMonth: boolean }[] = [];
+    for (let d = 1; d <= trailingCount; d++) {
+      const nextM = calendarMonth === 11 ? 1 : calendarMonth + 2;
+      const nextY = calendarMonth === 11 ? calendarYear + 1 : calendarYear;
+      trailingDays.push({
+        day: d,
+        dateStr: `${nextY}-${String(nextM).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        isCurrentMonth: false,
+      });
+    }
+
+    const allGridCells = [...paddingDays, ...currentMonthDays, ...trailingDays];
+
+    // Month totals for currently viewed calendar month
+    const monthKey = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}`;
+    const viewedMonthItems = allPlannedItems.filter(i => i.dueDate.startsWith(monthKey) && i.status !== 'skipped');
+    const plannedExpensesPaise = viewedMonthItems
+      .filter(i => i.kind === 'bill' || i.kind === 'one_off')
+      .reduce((s, i) => s + (i.status === 'paid' && i.actualAmount ? i.actualAmount : i.amount), 0);
+    const expectedInflowsPaise = viewedMonthItems
+      .filter(i => i.kind === 'income_expected' || i.kind === 'repayment_expected')
+      .reduce((s, i) => s + (i.status === 'paid' && i.actualAmount ? i.actualAmount : i.amount), 0);
+    const paidCount = viewedMonthItems.filter(i => i.status === 'paid').length;
+    const upcomingCount = viewedMonthItems.filter(i => i.status === 'upcoming').length;
+
+    return {
+      weekdays,
+      allGridCells,
+      monthKey,
+      plannedExpensesPaise,
+      expectedInflowsPaise,
+      paidCount,
+      upcomingCount,
+    };
+  }, [calendarYear, calendarMonth, settings.firstDayOfWeek, allPlannedItems]);
+
+  const handlePrevMonth = () => {
+    if (calendarMonth === 0) {
+      setCalendarYear(y => y - 1);
+      setCalendarMonth(11);
+    } else {
+      setCalendarMonth(m => m - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (calendarMonth === 11) {
+      setCalendarYear(y => y + 1);
+      setCalendarMonth(0);
+    } else {
+      setCalendarMonth(m => m + 1);
+    }
+  };
+
+  const handleTodayJump = () => {
+    const now = new Date();
+    setCalendarYear(now.getFullYear());
+    setCalendarMonth(now.getMonth());
+    setSelectedDate(todayStr);
+  };
 
   // Action handlers
   const handleMarkPaid = (item: PlannedItem) => {
@@ -451,7 +574,7 @@ export default function PlanScreen() {
         </button>
       </div>
 
-      {/* View Switcher: Upcoming Timeline vs Category Budgets */}
+      {/* View Switcher: Upcoming Timeline vs Month Calendar vs Category Budgets */}
       <div className="bg-gray-200/70 dark:bg-gray-800/70 rounded-2xl p-1 flex">
         <button
           onClick={() => setActiveTab('timeline')}
@@ -461,7 +584,17 @@ export default function PlanScreen() {
               : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
           }`}
         >
-          Upcoming & Timeline ({upcomingItems.length})
+          Timeline ({upcomingItems.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('calendar')}
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
+            activeTab === 'calendar'
+              ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+          }`}
+        >
+          Calendar
         </button>
         <button
           onClick={() => setActiveTab('budgets')}
@@ -644,7 +777,215 @@ export default function PlanScreen() {
       )}
 
       {/* ======================================================== */}
-      {/* TAB 2: CATEGORY BUDGETS (Unified with Plan Tab)         */}
+      {/* TAB 2: MONTH CALENDAR VIEW                               */}
+      {/* ======================================================== */}
+      {activeTab === 'calendar' && (
+        <div className="space-y-4">
+          {/* Calendar Card with Month Nav and Dots */}
+          <div className="bg-white dark:bg-gray-900 rounded-3xl p-4 border border-gray-100 dark:border-gray-800 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-gray-900 dark:text-gray-100">
+                  {formatMonthYear(`${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-01`)}
+                </h2>
+                <p className="text-[11px] text-gray-400">
+                  {calendarData.upcomingCount} upcoming · {calendarData.paidCount} paid
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleTodayJump}
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePrevMonth}
+                  className="p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+                  title="Previous month"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextMonth}
+                  className="p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+                  title="Next month"
+                >
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Weekday Column Headers */}
+            <div className="grid grid-cols-7 gap-1 text-center">
+              {calendarData.weekdays.map(d => (
+                <div key={d} className="text-[11px] font-bold text-gray-400 uppercase py-1">
+                  {d}
+                </div>
+              ))}
+            </div>
+
+            {/* Calendar Days Grid */}
+            <div className="grid grid-cols-7 gap-1">
+              {calendarData.allGridCells.map(cell => {
+                const isSelected = cell.dateStr === selectedDate;
+                const isCellToday = cell.dateStr === todayStr;
+                const dayItems = itemsByDate.get(cell.dateStr) || [];
+
+                const hasOverdue = dayItems.some(i => getItemDisplayStatus(i, todayStr) === 'overdue');
+                const hasDueSoonOrBill = dayItems.some(
+                  i => (i.kind === 'bill' || i.kind === 'one_off') && i.status === 'upcoming'
+                );
+                const hasInflow = dayItems.some(
+                  i => (i.kind === 'income_expected' || i.kind === 'repayment_expected') && i.status === 'upcoming'
+                );
+                const hasPaid = dayItems.some(i => i.status === 'paid');
+
+                return (
+                  <button
+                    key={cell.dateStr}
+                    type="button"
+                    onClick={() => setSelectedDate(cell.dateStr)}
+                    className={`min-h-[54px] p-1.5 rounded-2xl flex flex-col items-center justify-between transition-all relative ${
+                      isSelected
+                        ? 'bg-indigo-600 text-white font-bold shadow-md shadow-indigo-500/30'
+                        : isCellToday
+                        ? 'bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-extrabold ring-1 ring-indigo-400/50'
+                        : cell.isCurrentMonth
+                        ? 'text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/60'
+                        : 'text-gray-300 dark:text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    <span className="text-xs">{cell.day}</span>
+
+                    {/* Dots on due dates */}
+                    <div className="flex items-center gap-1 mt-1 justify-center min-h-[6px]">
+                      {hasOverdue && (
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white' : 'bg-red-500'}`}
+                          title="Overdue item"
+                        />
+                      )}
+                      {hasDueSoonOrBill && !hasOverdue && (
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-amber-200' : 'bg-amber-500'}`}
+                          title="Upcoming bill/expense"
+                        />
+                      )}
+                      {hasInflow && (
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-emerald-200' : 'bg-emerald-500'}`}
+                          title="Expected income/repayment"
+                        />
+                      )}
+                      {hasPaid && (
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-indigo-200' : 'bg-indigo-400'}`}
+                          title="Paid item"
+                        />
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Legend */}
+            <div className="flex items-center justify-center gap-3 pt-2 text-[10px] text-gray-400 border-t border-gray-100 dark:border-gray-800 flex-wrap">
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-red-500" /> Overdue
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-amber-500" /> Bill / Due Soon
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" /> Inflow (Income/Loan)
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-indigo-400" /> Paid
+              </span>
+            </div>
+          </div>
+
+          {/* Month Overview for Viewed Month */}
+          <div className="p-3.5 bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm flex items-center justify-between text-xs">
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                Planned Expenses
+              </p>
+              <p className="text-sm font-bold text-gray-900 dark:text-gray-100 mt-0.5">
+                {formatINR(calendarData.plannedExpensesPaise)}
+              </p>
+            </div>
+            {calendarData.expectedInflowsPaise > 0 && (
+              <div className="text-right">
+                <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">
+                  If Inflows Received
+                </p>
+                <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  +{formatINR(calendarData.expectedInflowsPaise)}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Selected Date Schedule Header & List */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-gray-900 dark:text-gray-100">
+                <Calendar size={14} className="text-indigo-500" />
+                <span>
+                  {formatDateShort(selectedDate)}
+                  {selectedDate === todayStr ? ' (Today)' : ''}
+                </span>
+                <span className="text-gray-400 font-normal">
+                  · {selectedDayItems.length} {selectedDayItems.length === 1 ? 'item' : 'items'}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingItem(null);
+                  setInitialDueDateForAdd(selectedDate);
+                  setIsAddEditOpen(true);
+                }}
+                className="text-xs text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1"
+              >
+                <Plus size={13} /> Add for this day
+              </button>
+            </div>
+
+            {selectedDayItems.length > 0 ? (
+              <div className="space-y-2">
+                {selectedDayItems.map(renderItemRow)}
+              </div>
+            ) : (
+              <div className="p-6 rounded-2xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 text-center space-y-2">
+                <p className="text-xs text-gray-400">No planned items due on this date</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingItem(null);
+                    setInitialDueDateForAdd(selectedDate);
+                    setIsAddEditOpen(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl gradient-primary text-white text-xs font-bold shadow-sm inline-flex items-center gap-1"
+                >
+                  <Plus size={13} /> Add Plan for {formatDateShort(selectedDate)}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* TAB 3: CATEGORY BUDGETS (Unified with Plan Tab)         */}
       {/* ======================================================== */}
       {activeTab === 'budgets' && (
         <div className="space-y-4">
@@ -902,8 +1243,10 @@ export default function PlanScreen() {
         onClose={() => {
           setIsAddEditOpen(false);
           setEditingItem(null);
+          setInitialDueDateForAdd(undefined);
         }}
         editItem={editingItem}
+        initialDueDate={initialDueDateForAdd}
       />
 
       {/* Quick Add Prefilled to Mark as Paid */}

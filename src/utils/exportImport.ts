@@ -1,9 +1,21 @@
 import { db } from '../db';
-import type { Transaction, Category, PaymentMethod } from '../types';
+import type { Transaction, Category, PaymentMethod, PlannedItem } from '../types';
 import { toRupees } from './money';
 
 export async function exportBackup(): Promise<string> {
-  const [transactions, categories, paymentMethods, budgets, recurringRules, persons, ledgerEntries, savingsGoals] = await Promise.all([
+  const [
+    transactions,
+    categories,
+    paymentMethods,
+    budgets,
+    recurringRules,
+    persons,
+    ledgerEntries,
+    settlements,
+    ledgerReminders,
+    savingsGoals,
+    plannedItems,
+  ] = await Promise.all([
     db.transactions.toArray(),
     db.categories.toArray(),
     db.paymentMethods.toArray(),
@@ -11,14 +23,29 @@ export async function exportBackup(): Promise<string> {
     db.recurringRules.toArray(),
     db.persons.toArray(),
     db.ledgerEntries.toArray(),
+    db.settlements.toArray(),
+    db.ledgerReminders.toArray(),
     db.savingsGoals.toArray(),
+    db.plannedItems.toArray(),
   ]);
 
   return JSON.stringify({
-    version: 1,
+    version: 3,
     exportDate: new Date().toISOString(),
     app: 'expense-tracker',
-    data: { transactions, categories, paymentMethods, budgets, recurringRules, persons, ledgerEntries, savingsGoals },
+    data: {
+      transactions,
+      categories,
+      paymentMethods,
+      budgets,
+      recurringRules,
+      persons,
+      ledgerEntries,
+      settlements,
+      ledgerReminders,
+      savingsGoals,
+      plannedItems,
+    },
   }, null, 2);
 }
 
@@ -44,7 +71,10 @@ export async function importBackup(jsonString: string): Promise<{ success: boole
       db.recurringRules.clear(),
       db.persons.clear(),
       db.ledgerEntries.clear(),
+      db.settlements.clear(),
+      db.ledgerReminders.clear(),
       db.savingsGoals.clear(),
+      db.plannedItems.clear(),
     ]);
 
     // Import data
@@ -55,13 +85,45 @@ export async function importBackup(jsonString: string): Promise<{ success: boole
     if (data.recurringRules?.length) await db.recurringRules.bulkAdd(data.recurringRules);
     if (data.persons?.length) await db.persons.bulkAdd(data.persons);
     if (data.ledgerEntries?.length) await db.ledgerEntries.bulkAdd(data.ledgerEntries);
+    if (data.settlements?.length) await db.settlements.bulkAdd(data.settlements);
+    if (data.ledgerReminders?.length) await db.ledgerReminders.bulkAdd(data.ledgerReminders);
     if (data.savingsGoals?.length) await db.savingsGoals.bulkAdd(data.savingsGoals);
+    if (data.plannedItems?.length) await db.plannedItems.bulkAdd(data.plannedItems);
 
     const txnCount = data.transactions?.length || 0;
-    return { success: true, message: `Restored ${txnCount} transactions successfully.` };
+    const planCount = data.plannedItems?.length || 0;
+    return { success: true, message: `Restored ${txnCount} transactions & ${planCount} planned items successfully.` };
   } catch (e) {
     return { success: false, message: `Import failed: ${e instanceof Error ? e.message : 'Unknown error'}` };
   }
+}
+
+export function exportPlanCSV(
+  plannedItems: PlannedItem[],
+  categories: Category[],
+  paymentMethods: PaymentMethod[]
+): string {
+  const catMap = new Map(categories.map(c => [c.id, c.name]));
+  const pmMap = new Map(paymentMethods.map(p => [p.id, p.name]));
+
+  const headers = ['Due Date', 'Title', 'Kind', 'Amount (₹)', 'Type', 'Category', 'Payment Method', 'Status', 'Actual Paid (₹)', 'Repeat', 'Note'];
+  const rows = plannedItems
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+    .map(p => [
+      p.dueDate,
+      `"${p.title.replace(/"/g, '""')}"`,
+      p.kind,
+      toRupees(p.amount).toFixed(2),
+      p.amountType,
+      catMap.get(p.categoryId) || 'Unknown',
+      p.paymentMethodId ? pmMap.get(p.paymentMethodId) || '' : '',
+      p.status,
+      p.actualAmount ? toRupees(p.actualAmount).toFixed(2) : '',
+      p.repeat,
+      `"${(p.note || '').replace(/"/g, '""')}"`,
+    ].join(','));
+
+  return [headers.join(','), ...rows].join('\n');
 }
 
 export async function exportCSV(

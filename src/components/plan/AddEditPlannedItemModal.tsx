@@ -30,6 +30,7 @@ interface AddEditPlannedItemModalProps {
   onClose: () => void;
   editItem?: PlannedItem | null;
   initialKind?: PlannedItemKind;
+  initialDueDate?: string;
   onSaved?: (item: PlannedItem) => void;
 }
 
@@ -38,6 +39,7 @@ export default function AddEditPlannedItemModal({
   onClose,
   editItem,
   initialKind = 'bill',
+  initialDueDate,
   onSaved,
 }: AddEditPlannedItemModalProps) {
   const { showToast } = useToast();
@@ -83,11 +85,11 @@ export default function AddEditPlannedItemModal({
         setTitle('');
         setAmountStr('');
         setAmountType('exact');
-        setDueDate(today());
+        setDueDate(initialDueDate || today());
         setCategoryId(activeCategories[0]?.id || '');
         setPaymentMethodId('');
         setRepeat(initialKind === 'bill' ? 'monthly' : 'none');
-        setCustomDayOfMonth(parseInt(today().split('-')[2], 10) || 1);
+        setCustomDayOfMonth(parseInt((initialDueDate || today()).split('-')[2], 10) || 1);
         setReminderDaysBefore(3);
         setNote('');
         setLinkedPersonId('');

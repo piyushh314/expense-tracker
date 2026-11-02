@@ -178,7 +178,7 @@ export default function QuickAdd({
         })();
       } else if (payPlannedItem) {
         resetForm();
-        setTxnType(payPlannedItem.kind === 'income_expected' ? 'income' : 'expense');
+        setTxnType(payPlannedItem.kind === 'income_expected' || payPlannedItem.kind === 'repayment_expected' ? 'income' : 'expense');
         setAmountStr(String(payPlannedItem.amount / 100));
         if (payPlannedItem.categoryId) setCategoryId(payPlannedItem.categoryId);
         if (payPlannedItem.paymentMethodId) setPaymentMethodId(payPlannedItem.paymentMethodId);
