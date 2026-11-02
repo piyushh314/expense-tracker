@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowRight, TrendingUp, Wallet, ShieldCheck, Users, X } from 'lucide-react';
+import { ArrowRight, TrendingUp, Wallet, ShieldCheck, Users, X, AlertCircle } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
 import { getCurrentMonth, getDaysRemaining, formatMonthYear, today } from '../utils/date';
 import { getEffectiveExpensePaise, getPersonInitials } from '../utils/peopleLedger';
+import { calculateMonthForecast } from '../utils/planForecast';
 import { usePeopleLedgerSummary } from '../hooks/useDatabase';
 import { useSettings } from '../contexts/SettingsContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
@@ -34,6 +35,8 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
     [range.from, range.to]
   ) ?? [];
 
+  const plannedItems = useLiveQuery(() => db.plannedItems.toArray()) ?? [];
+
   const recentTxns = useLiveQuery(
     () => db.transactions.orderBy('createdAt').reverse().limit(5).toArray()
   ) ?? [];
@@ -42,9 +45,35 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
   const totalIncome = monthTxns.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
   const budgetAmount = settings.monthlyBudget || 0;
   const budgetPct = budgetAmount > 0 ? Math.round((totalSpent / budgetAmount) * 100) : 0;
-  const safePerDay = budgetAmount > 0 && daysLeft > 0
-    ? Math.max(0, Math.round((budgetAmount - totalSpent) / daysLeft))
-    : 0;
+
+  // New Forecast & Safe-to-Spend formula
+  const forecast = useMemo(() => {
+    const startD = new Date(range.from + 'T00:00:00');
+    const todayD = new Date(today() + 'T00:00:00');
+    const diffTime = todayD.getTime() - startD.getTime();
+    const daysElapsed = Math.max(1, Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1);
+
+    return calculateMonthForecast({
+      monthlyBudgetPaise: settings.monthlyBudget || 0,
+      spentSoFarPaise: totalSpent,
+      plannedItems,
+      currentMonthRange: range,
+      daysElapsedSoFar: daysElapsed,
+      daysLeftInMonth: daysLeft,
+      startingBalancePaise: settings.startingBalance,
+      monthlyIncomePaise: settings.monthlyIncome,
+    });
+  }, [
+    settings.monthlyBudget,
+    settings.startingBalance,
+    settings.monthlyIncome,
+    totalSpent,
+    plannedItems,
+    range,
+    daysLeft,
+  ]);
+
+  const safePerDay = forecast.safeToSpendPerDayPaise;
 
   const topCategory = useMemo(() => {
     const totals = new Map<string, number>();
@@ -171,19 +200,49 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
                 }`}
               />
             </div>
-            {safePerDay > 0 && (
-              <p className="mt-2 text-sm">
+            <div className="mt-2 space-y-0.5">
+              <p className="text-sm">
                 <span className="opacity-80">Safe to spend: </span>
                 <span className="font-bold">{formatINR(safePerDay)}/day</span>
                 <span className="opacity-60 ml-1">({daysLeft} days left)</span>
               </p>
-            )}
+              {forecast.unpaidPlannedExpensesThisMonthPaise > 0 && (
+                <p className="text-xs text-white/80">
+                  Includes {formatINR(forecast.unpaidPlannedExpensesThisMonthPaise)} in upcoming bills
+                </p>
+              )}
+              {forecast.expectedIncomeThisMonthPaise + forecast.expectedRepaymentsThisMonthPaise > 0 && (
+                <p className="text-xs text-emerald-200">
+                  If received: +{formatINR(forecast.expectedIncomeThisMonthPaise + forecast.expectedRepaymentsThisMonthPaise)}
+                </p>
+              )}
+            </div>
+
+            {/* Month-End Projection Range */}
+            <div className="mt-3 pt-2.5 border-t border-white/15 flex items-center justify-between text-xs">
+              <span className="opacity-80">Month-end projection:</span>
+              <span className="font-bold">
+                {formatINR(forecast.projectionRangePaise.low)} – {formatINR(forecast.projectionRangePaise.high)}
+              </span>
+            </div>
+
+            {/* Deficit / Leftover Warning */}
+            {forecast.isDeficit && forecast.projectedLeftoverPaise !== null ? (
+              <div className="mt-2.5 p-2 rounded-xl bg-red-500/30 border border-red-300/40 text-xs flex items-center gap-1.5 font-medium">
+                <AlertCircle size={14} className="shrink-0 text-red-200" />
+                <span>Projected deficit: ~{formatINR(Math.abs(forecast.projectedLeftoverPaise))} short this month</span>
+              </div>
+            ) : forecast.projectedLeftoverPaise !== null ? (
+              <p className="text-xs text-white/80 mt-1">
+                Projected leftover: <span className="font-bold">{formatINR(forecast.projectedLeftoverPaise)}</span>
+              </p>
+            ) : null}
           </>
         )}
 
         {budgetAmount === 0 && (
-          <button onClick={() => onNavigate('budgets')} className="mt-3 text-sm opacity-80 underline underline-offset-4">
-            Set a monthly budget →
+          <button onClick={() => onNavigate('plan')} className="mt-3 text-sm opacity-80 underline underline-offset-4">
+            Set a monthly budget in Plan →
           </button>
         )}
       </motion.div>

@@ -7,6 +7,7 @@ import { db } from '../db';
 import { formatINR, toPaise, toRupees } from '../utils/money';
 import { getCurrentMonth, getDaysRemaining, formatMonthYear, today } from '../utils/date';
 import { getEffectiveExpensePaise } from '../utils/peopleLedger';
+import { calculateSafeToSpendPerDay } from '../utils/planForecast';
 import { useSettings } from '../contexts/SettingsContext';
 import { useToast } from '../contexts/ToastContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
@@ -26,6 +27,13 @@ export default function BudgetsScreen() {
     [range.from, range.to]
   ) ?? [];
 
+  const plannedItems = useLiveQuery(() => db.plannedItems.toArray()) ?? [];
+  const unpaidPlannedDueThisMonth = useMemo(() => {
+    return plannedItems
+      .filter(i => i.status === 'upcoming' && (i.kind === 'bill' || i.kind === 'one_off') && (i.dueDate <= range.to || i.dueDate < range.from))
+      .reduce((s, i) => s + i.amount, 0);
+  }, [plannedItems, range.to, range.from]);
+
   const totalSpent = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
   const spentByCategory = useMemo(() => {
     const m = new Map<string, number>();
@@ -35,7 +43,12 @@ export default function BudgetsScreen() {
 
   const overallBudget = settings.monthlyBudget || 0;
   const overallPct = overallBudget > 0 ? Math.round((totalSpent / overallBudget) * 100) : 0;
-  const safePerDay = overallBudget > 0 && daysLeft > 0 ? Math.max(0, Math.round((overallBudget - totalSpent) / daysLeft)) : 0;
+  const { safeToSpendPerDayPaise: safePerDay } = calculateSafeToSpendPerDay({
+    monthlyBudgetPaise: overallBudget,
+    spentSoFarPaise: totalSpent,
+    unpaidPlannedExpensesThisMonthPaise: unpaidPlannedDueThisMonth,
+    daysLeftInMonth: daysLeft,
+  });
 
   const [showOverallEdit, setShowOverallEdit] = useState(false);
   const [overallInput, setOverallInput] = useState('');
