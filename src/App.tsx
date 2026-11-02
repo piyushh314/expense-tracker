@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Home, List, BarChart3, Presentation, Settings, Plus, Wallet, Users, MoreHorizontal, X } from 'lucide-react';
+import { Home, List, BarChart3, Presentation, Settings, Plus, Wallet, Users, MoreHorizontal, X, CalendarClock } from 'lucide-react';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { seedDatabase } from './db';
@@ -9,13 +9,13 @@ import HomeScreen from './screens/HomeScreen';
 import TransactionsScreen from './screens/TransactionsScreen';
 import InsightsScreen from './screens/InsightsScreen';
 import PresentScreen from './screens/PresentScreen';
-import BudgetsScreen from './screens/BudgetsScreen';
+import PlanScreen from './screens/PlanScreen';
 import PeopleScreen from './screens/PeopleScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import QuickAdd from './components/QuickAdd';
 import type { Transaction } from './types';
 
-type Screen = 'home' | 'transactions' | 'insights' | 'present' | 'budgets' | 'people' | 'settings';
+type Screen = 'home' | 'transactions' | 'insights' | 'present' | 'budgets' | 'plan' | 'people' | 'settings';
 
 function AppContent() {
   const [screen, setScreen] = useState<Screen>('home');
@@ -43,7 +43,7 @@ function AppContent() {
     { id: 'transactions', icon: List, label: 'History' },
     { id: 'insights', icon: BarChart3, label: 'Insights' },
     { id: 'present', icon: Presentation, label: 'Present' },
-    { id: 'budgets', icon: Wallet, label: 'Budgets' },
+    { id: 'plan', icon: CalendarClock, label: 'Plan' },
     { id: 'people', icon: Users, label: 'People' },
   ];
 
@@ -126,7 +126,8 @@ function AppContent() {
               )}
               {screen === 'insights' && <InsightsScreen />}
               {screen === 'present' && <PresentScreen />}
-              {screen === 'budgets' && <BudgetsScreen />}
+              {screen === 'budgets' && <PlanScreen />}
+              {screen === 'plan' && <PlanScreen />}
               {screen === 'people' && <PeopleScreen />}
               {screen === 'settings' && <SettingsScreen />}
             </motion.div>
@@ -170,10 +171,10 @@ function AppContent() {
 
             <button onClick={() => setMoreMenuOpen(true)}
               className={`flex flex-col items-center gap-0.5 py-1 px-3 rounded-lg transition-all relative ${
-                ['present', 'budgets', 'people', 'settings'].includes(screen) ? 'text-indigo-500 font-semibold' : 'text-gray-400 dark:text-gray-500'
+                ['present', 'budgets', 'plan', 'people', 'settings'].includes(screen) ? 'text-indigo-500 font-semibold' : 'text-gray-400 dark:text-gray-500'
               }`}>
               <div className="relative">
-                <MoreHorizontal size={20} strokeWidth={['present', 'budgets', 'people', 'settings'].includes(screen) ? 2.5 : 2} />
+                <MoreHorizontal size={20} strokeWidth={['present', 'budgets', 'plan', 'people', 'settings'].includes(screen) ? 2.5 : 2} />
                 {badgeCount > 0 && (
                   <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-500" />
                 )}
@@ -210,11 +211,11 @@ function AppContent() {
                   <span className="text-[11px] text-gray-500">Auto slide deck</span>
                 </button>
 
-                <button onClick={() => { setScreen('budgets'); setMoreMenuOpen(false); }}
+                <button onClick={() => { setScreen('plan'); setMoreMenuOpen(false); }}
                   className="p-3.5 rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/40 dark:to-orange-950/40 border border-amber-100 dark:border-amber-900 flex flex-col items-start gap-1 text-left">
-                  <Wallet size={20} className="text-amber-500 mb-1" />
-                  <span className="font-bold text-sm">Budgets</span>
-                  <span className="text-[11px] text-gray-500">Limits & safe spend</span>
+                  <CalendarClock size={20} className="text-amber-500 mb-1" />
+                  <span className="font-bold text-sm">Plan</span>
+                  <span className="text-[11px] text-gray-500">Bills, forecast & budgets</span>
                 </button>
 
                 <button onClick={() => { setScreen('people'); setMoreMenuOpen(false); }}

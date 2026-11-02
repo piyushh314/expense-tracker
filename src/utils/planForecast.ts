@@ -386,3 +386,4 @@ export function suggestEstimateAmount(seriesId: string, pastItems: PlannedItem[]
   const sum = paidSeriesItems.reduce((acc, item) => acc + (item.actualAmount ?? item.amount), 0);
   return Math.round(sum / paidSeriesItems.length);
 }
+

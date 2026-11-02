@@ -26,15 +26,24 @@ import {
   saveTransactionWithSplits,
   checkTransactionSettlements,
 } from '../utils/transactionLedger';
-import type { Transaction, TransactionType, Scope, SplitMode, Person } from '../types';
+import type { Transaction, TransactionType, Scope, SplitMode, Person, PlannedItem } from '../types';
+import { calculateNextOccurrenceDate } from '../utils/planForecast';
 
 interface QuickAddProps {
   isOpen: boolean;
   onClose: () => void;
   editTransaction?: Transaction | null;
+  payPlannedItem?: PlannedItem | null;
+  onPaidPlannedItem?: (item: PlannedItem, txn: Transaction) => void;
 }
 
-export default function QuickAdd({ isOpen, onClose, editTransaction }: QuickAddProps) {
+export default function QuickAdd({
+  isOpen,
+  onClose,
+  editTransaction,
+  payPlannedItem,
+  onPaidPlannedItem,
+}: QuickAddProps) {
   const { settings, updateSettings } = useSettings();
   const { showToast } = useToast();
   const expenseCategories = useCategories('expense');
@@ -167,12 +176,20 @@ export default function QuickAdd({ isOpen, onClose, editTransaction }: QuickAddP
             setCustomShares(shares);
           }
         })();
+      } else if (payPlannedItem) {
+        resetForm();
+        setTxnType(payPlannedItem.kind === 'income_expected' ? 'income' : 'expense');
+        setAmountStr(String(payPlannedItem.amount / 100));
+        if (payPlannedItem.categoryId) setCategoryId(payPlannedItem.categoryId);
+        if (payPlannedItem.paymentMethodId) setPaymentMethodId(payPlannedItem.paymentMethodId);
+        setDate(today());
+        setNote(payPlannedItem.note ? `${payPlannedItem.title} - ${payPlannedItem.note}` : payPlannedItem.title);
       } else {
         resetForm();
       }
       setTimeout(() => amountRef.current?.focus(), 300);
     }
-  }, [isOpen, editTransaction]);
+  }, [isOpen, editTransaction, payPlannedItem]);
 
   useEffect(() => {
     if (!categoryId && categories.length > 0) {
@@ -237,7 +254,49 @@ export default function QuickAdd({ isOpen, onClose, editTransaction }: QuickAddP
       isEdit: !!editTransaction,
     });
 
-    if (editTransaction) {
+    if (payPlannedItem) {
+      // 1. Mark planned item as paid, store actualAmount & linkedTransactionId
+      await db.plannedItems.update(payPlannedItem.id, {
+        status: 'paid',
+        actualAmount: txn.amount,
+        linkedTransactionId: txn.id,
+        updatedAt: Date.now(),
+      });
+
+      // 2. If recurring, generate next occurrence
+      if (payPlannedItem.repeat !== 'none') {
+        const nextDate = calculateNextOccurrenceDate(
+          payPlannedItem.dueDate,
+          payPlannedItem.repeat,
+          payPlannedItem.customDayOfMonth
+        );
+        const seriesId = payPlannedItem.seriesId || payPlannedItem.id;
+        const existing = await db.plannedItems
+          .where('seriesId')
+          .equals(seriesId)
+          .and(p => p.dueDate === nextDate)
+          .first();
+
+        if (!existing) {
+          await db.plannedItems.add({
+            ...payPlannedItem,
+            id: uuid(),
+            seriesId,
+            dueDate: nextDate,
+            status: 'upcoming',
+            actualAmount: undefined,
+            linkedTransactionId: undefined,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
+      }
+
+      onPaidPlannedItem?.(payPlannedItem, txn);
+      showToast(
+        `Paid! Recorded actual ${formatINR(txn.amount)} (planned ${formatINR(payPlannedItem.amount)})`
+      );
+    } else if (editTransaction) {
       showToast('Transaction updated');
     } else {
       const savedTxn = { ...txn };
@@ -328,7 +387,9 @@ export default function QuickAdd({ isOpen, onClose, editTransaction }: QuickAddP
                 </div>
 
                 <div className="flex items-center justify-between px-5 py-3">
-                  <h2 className="text-lg font-bold">{editTransaction ? 'Edit' : 'Add'} Transaction</h2>
+                  <h2 className="text-lg font-bold">
+                    {editTransaction ? 'Edit' : payPlannedItem ? 'Pay Planned' : 'Add'} Transaction
+                  </h2>
                   <button
                     onClick={onClose}
                     className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -336,6 +397,22 @@ export default function QuickAdd({ isOpen, onClose, editTransaction }: QuickAddP
                     <X size={20} />
                   </button>
                 </div>
+
+                {payPlannedItem && (
+                  <div className="mx-5 mb-3 p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs">
+                    <div>
+                      <p className="font-bold text-emerald-800 dark:text-emerald-300">
+                        Marking as Paid: {payPlannedItem.title}
+                      </p>
+                      <p className="text-emerald-600 dark:text-emerald-400 mt-0.5">
+                        Planned: {formatINR(payPlannedItem.amount)} · You can adjust the actual amount paid
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 font-bold uppercase text-[10px]">
+                      {payPlannedItem.amountType}
+                    </span>
+                  </div>
+                )}
 
                 {/* Type Switcher */}
                 <div className="px-5 pb-3">
