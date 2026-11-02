@@ -150,6 +150,34 @@ export interface SavingsGoal {
   createdAt: number;
 }
 
+export type PlannedItemKind = 'bill' | 'one_off' | 'income_expected' | 'repayment_expected';
+export type PlannedAmountType = 'exact' | 'estimate';
+export type PlannedRepeat = 'none' | 'weekly' | 'monthly' | 'yearly' | 'custom_day';
+export type PlannedItemStatus = 'upcoming' | 'paid' | 'skipped';
+export type PlannedDisplayStatus = 'upcoming' | 'due_soon' | 'overdue' | 'paid' | 'skipped';
+
+export interface PlannedItem {
+  id: string;
+  kind: PlannedItemKind; // 'bill' | 'one_off' | 'income_expected' | 'repayment_expected'
+  title: string;
+  amount: number; // integer paise
+  amountType: PlannedAmountType;
+  dueDate: string; // YYYY-MM-DD
+  categoryId: string;
+  paymentMethodId?: string;
+  repeat: PlannedRepeat;
+  customDayOfMonth?: number; // 1-31
+  reminderDaysBefore: number; // default 3
+  note: string;
+  status: PlannedItemStatus;
+  linkedLedgerEntryId?: string;
+  linkedTransactionId?: string;
+  actualAmount?: number; // integer paise
+  seriesId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AppSettings {
   currency: string;
   locale: string;
@@ -164,6 +192,8 @@ export interface AppSettings {
   remindersEnabled: boolean; // default true
   remindersForDebtsIOwe: boolean; // default true
   userUpiId?: string;
+  monthlyIncome?: number | null; // paise
+  startingBalance?: number | null; // paise
 }
 
 // For insight cards

@@ -15,6 +15,7 @@ import type {
   Settlement,
   LedgerReminder,
   SavingsGoal,
+  PlannedItem,
 } from '../types';
 import { getPersonAvatarColor } from '../utils/peopleLedger';
 
@@ -29,6 +30,7 @@ export class ExpenseTrackerDB extends Dexie {
   settlements!: Table<Settlement, string>;
   ledgerReminders!: Table<LedgerReminder, string>;
   savingsGoals!: Table<SavingsGoal, string>;
+  plannedItems!: Table<PlannedItem, string>;
 
   constructor() {
     super('ExpenseTrackerDB');
@@ -121,6 +123,52 @@ export class ExpenseTrackerDB extends Dexie {
           t.splitMode = t.splitInfo ? 'equally' : 'none';
         }
       });
+    });
+
+    // Version 3: Plan (Upcoming expenses, bills, and forecast)
+    this.version(3).stores({
+      transactions: 'id, type, categoryId, paymentMethodId, date, paidBy, [type+date], [categoryId+date], *tags, createdAt',
+      categories: 'id, order, type, archived',
+      paymentMethods: 'id, order, archived',
+      budgets: 'id, period, categoryId, [period+categoryId]',
+      recurringRules: 'id, nextDueDate, active',
+      persons: 'id, name, label, archived, createdAt',
+      ledgerEntries: 'id, personId, date, direction, kind, transactionId, splitGroupId, dueDate, createdAt',
+      settlements: 'id, personId, date, direction, createdAt',
+      ledgerReminders: 'id, personId, entryId, nextRemindAt, active',
+      savingsGoals: 'id',
+      plannedItems: 'id, kind, dueDate, categoryId, status, seriesId, linkedLedgerEntryId, linkedTransactionId, [status+dueDate]',
+    }).upgrade(async tx => {
+      // Migrate existing recurringRules into plannedItems safely
+      try {
+        const rules = await tx.table('recurringRules').toArray();
+        if (rules && rules.length > 0) {
+          const newPlannedItems = rules.map((rule: any) => {
+            const tmpl = rule.templateTransaction || {};
+            const isIncome = tmpl.type === 'income';
+            return {
+              id: rule.id || `plan-migrated-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              title: tmpl.note || (isIncome ? 'Expected Income' : 'Recurring Bill'),
+              amount: tmpl.amount || 0,
+              amountType: 'exact',
+              dueDate: rule.nextDueDate || new Date().toISOString().split('T')[0],
+              categoryId: tmpl.categoryId || '',
+              paymentMethodId: tmpl.paymentMethodId,
+              repeat: rule.frequency === 'weekly' ? 'weekly' : rule.frequency === 'yearly' ? 'yearly' : rule.customDayOfMonth ? 'custom_day' : 'monthly',
+              customDayOfMonth: rule.customDayOfMonth,
+              reminderDaysBefore: 3,
+              note: tmpl.note || '',
+              status: rule.active ? 'upcoming' : 'skipped',
+              seriesId: rule.id,
+              createdAt: rule.createdAt || Date.now(),
+              updatedAt: Date.now(),
+            };
+          });
+          await tx.table('plannedItems').bulkAdd(newPlannedItems);
+        }
+      } catch (err) {
+        console.warn('Error migrating recurring rules to planned items:', err);
+      }
     });
   }
 }
