@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sun, Moon, Monitor, ChevronRight, Download, Upload, Shield, Trash2, X, Plus, ArrowUp, ArrowDown, Sparkles } from 'lucide-react';
+import { Sun, Moon, Monitor, ChevronRight, Download, Upload, Shield, Trash2, X, Plus, ArrowUp, ArrowDown, Sparkles, Users, Calendar } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { v4 as uuid } from 'uuid';
 import { db } from '../db';
@@ -151,10 +151,12 @@ export default function SettingsScreen() {
       db.recurringRules.clear(),
       db.persons.clear(),
       db.ledgerEntries.clear(),
+      db.settlements.clear(),
+      db.ledgerReminders.clear(),
       db.savingsGoals.clear(),
     ]);
     setShowDeleteConfirm(false);
-    showToast('All transaction data cleared');
+    showToast('All transaction and ledger data cleared');
   };
 
   const themeOptions: { mode: ThemeMode; icon: typeof Sun; label: string }[] = [
@@ -203,6 +205,86 @@ export default function SettingsScreen() {
               <option value={0}>Sunday</option>
               <option value={1}>Monday</option>
             </select>
+          </div>
+        </div>
+      </section>
+
+      {/* People Ledger & Reminders */}
+      <section>
+        <div className="flex items-center gap-2 mb-3">
+          <Users size={16} className="text-indigo-500" />
+          <h2 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            People Ledger & Reminders
+          </h2>
+        </div>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 divide-y divide-gray-100 dark:divide-gray-800">
+          {/* Default reminder interval */}
+          <div className="p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold">Default reminder interval</p>
+              <p className="text-xs text-gray-500 mt-0.5">Remind me if someone owes me after N days</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min={1}
+                max={90}
+                value={settings.defaultReminderDays ?? 7}
+                onChange={e => updateSettings({ defaultReminderDays: Math.max(1, parseInt(e.target.value) || 7) })}
+                className="w-16 text-center py-1.5 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-bold outline-none"
+              />
+              <span className="text-xs text-gray-400 font-medium">days</span>
+            </div>
+          </div>
+
+          {/* Remind for debts I owe toggle */}
+          <div className="p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold">Remind for debts I owe</p>
+              <p className="text-xs text-gray-500 mt-0.5">Show notifications and banners for money I need to return</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => updateSettings({ remindersForDebtsIOwe: !settings.remindersForDebtsIOwe })}
+              className={`w-12 h-6 rounded-full transition-colors relative p-0.5 ${
+                settings.remindersForDebtsIOwe !== false ? 'bg-indigo-500' : 'bg-gray-200 dark:bg-gray-700'
+              }`}
+            >
+              <div
+                className={`w-5 h-5 rounded-full bg-white transition-transform ${
+                  settings.remindersForDebtsIOwe !== false ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* User UPI ID */}
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-sm font-semibold">Your UPI ID</p>
+              <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">1-Tap Pay Link</span>
+            </div>
+            <p className="text-xs text-gray-500 mb-2.5">
+              Appended to WhatsApp reminder messages so friends can tap & pay you directly.
+            </p>
+            <input
+              type="text"
+              placeholder="e.g. rohit@okhdfcbank or 9876543210@upi"
+              value={settings.userUpiId || ''}
+              onChange={e => updateSettings({ userUpiId: e.target.value.trim() })}
+              className="w-full px-3.5 py-2 bg-gray-100 dark:bg-gray-800 rounded-xl text-sm font-mono outline-none focus:ring-2 focus:ring-indigo-500/30"
+            />
+          </div>
+
+          {/* Offline calendar note */}
+          <div className="p-3.5 bg-amber-500/5 flex items-start gap-2.5 text-xs text-amber-700 dark:text-amber-400">
+            <Calendar size={16} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-semibold mb-0.5">Offline Calendar Reliability</p>
+              <p className="text-[11px] leading-relaxed opacity-90">
+                Offline web apps cannot guarantee background push notifications when fully closed on mobile (especially iOS). Use the <strong>"Add to Calendar"</strong> button in any reminder sheet to set guaranteed native phone alarms.
+              </p>
+            </div>
           </div>
         </div>
       </section>

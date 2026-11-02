@@ -17,6 +17,7 @@ import {
   Clock,
   Copy,
   AlertCircle,
+  Bell,
 } from 'lucide-react';
 import { db } from '../../db';
 import { formatINR, toRupees } from '../../utils/money';
@@ -31,6 +32,7 @@ import type { Person, LedgerEntry, Settlement } from '../../types';
 import LendBorrowSheet from './LendBorrowSheet';
 import SettleSheet from './SettleSheet';
 import AddPersonModal from './AddPersonModal';
+import ReminderSheet from './ReminderSheet';
 
 interface PersonDetailViewProps {
   person: Person;
@@ -54,6 +56,8 @@ export default function PersonDetailView({
   const [showEditModal, setShowEditModal] = useState(false);
   const [showLendBorrowSheet, setShowLendBorrowSheet] = useState(false);
   const [showSettleSheet, setShowSettleSheet] = useState(false);
+  const [showReminderSheet, setShowReminderSheet] = useState(false);
+  const [selectedReminderEntry, setSelectedReminderEntry] = useState<LedgerEntry | null>(null);
   const [editingEntry, setEditingEntry] = useState<LedgerEntry | null>(null);
   const [entryToDelete, setEntryToDelete] = useState<LedgerEntry | null>(null);
   const [showDeletePersonBlocked, setShowDeletePersonBlocked] = useState(false);
@@ -300,21 +304,32 @@ export default function PersonDetailView({
             )}
           </div>
 
-          {/* Action Buttons */}
-          <div className="grid grid-cols-2 gap-3 mt-6">
+          {/* Action Buttons: Settle up, Lend/Borrow, Remind */}
+          <div className="grid grid-cols-3 gap-2 mt-6">
             <button
               onClick={() => setShowSettleSheet(true)}
               disabled={balanceSummary.netPaise === 0}
-              className="py-3 px-4 rounded-2xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/25 transition-all active:scale-95"
+              className="py-3 px-2 rounded-2xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-1 shadow-lg shadow-emerald-500/25 transition-all active:scale-95"
             >
-              <CheckCircle2 size={16} /> Settle Up
+              <CheckCircle2 size={15} /> Settle Up
             </button>
 
             <button
               onClick={() => setShowLendBorrowSheet(true)}
-              className="py-3 px-4 rounded-2xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-500/25 transition-all active:scale-95"
+              className="py-3 px-2 rounded-2xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold text-xs flex items-center justify-center gap-1 shadow-lg shadow-indigo-500/25 transition-all active:scale-95"
             >
-              <Plus size={16} /> Lend / Borrow
+              <Plus size={15} /> Lend / Borrow
+            </button>
+
+            <button
+              onClick={() => {
+                setSelectedReminderEntry(null);
+                setShowReminderSheet(true);
+              }}
+              disabled={balanceSummary.netPaise === 0}
+              className="py-3 px-2 rounded-2xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-1 shadow-lg shadow-amber-500/25 transition-all active:scale-95"
+            >
+              <Bell size={15} /> Remind
             </button>
           </div>
         </div>
@@ -429,6 +444,18 @@ export default function PersonDetailView({
                               {isTheyOwe ? '+' : '-'}{formatINR(entry.amount)}
                             </span>
                           </div>
+                          <button
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setSelectedReminderEntry(entry);
+                              setShowReminderSheet(true);
+                            }}
+                            className="p-1 rounded-lg text-gray-300 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-colors"
+                            title="Set reminder / snooze"
+                          >
+                            <Bell size={13} />
+                          </button>
                           <button
                             type="button"
                             onClick={e => {
@@ -578,6 +605,19 @@ export default function PersonDetailView({
         )}
       </AnimatePresence>
 
+      {/* Reminder & Calendar Sheet */}
+      <ReminderSheet
+        isOpen={showReminderSheet}
+        onClose={() => {
+          setShowReminderSheet(false);
+          setSelectedReminderEntry(null);
+        }}
+        person={person}
+        entry={selectedReminderEntry}
+        netPaise={balanceSummary.netPaise}
+        onSettleRequested={() => setShowSettleSheet(true)}
+      />
+
       {/* Delete Entry Confirm */}
       <AnimatePresence>
         {entryToDelete && (
@@ -620,6 +660,19 @@ export default function PersonDetailView({
         )}
       </AnimatePresence>
 
+      {/* Reminder & Calendar Sheet */}
+      <ReminderSheet
+        isOpen={showReminderSheet}
+        onClose={() => {
+          setShowReminderSheet(false);
+          setSelectedReminderEntry(null);
+        }}
+        person={person}
+        entry={selectedReminderEntry}
+        netPaise={balanceSummary.netPaise}
+        onSettleRequested={() => setShowSettleSheet(true)}
+      />
+
       {/* Delete Person Confirm (when balance is 0) */}
       <AnimatePresence>
         {showDeletePersonConfirm && (
@@ -661,6 +714,19 @@ export default function PersonDetailView({
           </>
         )}
       </AnimatePresence>
+
+      {/* Reminder & Calendar Sheet */}
+      <ReminderSheet
+        isOpen={showReminderSheet}
+        onClose={() => {
+          setShowReminderSheet(false);
+          setSelectedReminderEntry(null);
+        }}
+        person={person}
+        entry={selectedReminderEntry}
+        netPaise={balanceSummary.netPaise}
+        onSettleRequested={() => setShowSettleSheet(true)}
+      />
     </div>
   );
 }
