@@ -4,7 +4,7 @@ import { Home, List, BarChart3, Presentation, Settings, Plus, Wallet, Users, Mor
 import { SettingsProvider } from './contexts/SettingsContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { seedDatabase } from './db';
-import { usePeopleLedgerSummary } from './hooks/useDatabase';
+import { usePeopleLedgerSummary, usePlanSummary } from './hooks/useDatabase';
 import HomeScreen from './screens/HomeScreen';
 import TransactionsScreen from './screens/TransactionsScreen';
 import InsightsScreen from './screens/InsightsScreen';
@@ -23,6 +23,7 @@ function AppContent() {
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const { badgeCount } = usePeopleLedgerSummary();
+  const { badgeCount: planBadgeCount } = usePlanSummary();
 
   useEffect(() => {
     seedDatabase();
@@ -76,6 +77,11 @@ function AppContent() {
                 }`}>
                 <item.icon size={18} />
                 <span className="flex-1 text-left">{item.label}</span>
+                {item.id === 'plan' && planBadgeCount > 0 && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">
+                    {planBadgeCount}
+                  </span>
+                )}
                 {item.id === 'people' && badgeCount > 0 && (
                   <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500 text-white">
                     {badgeCount}
@@ -175,8 +181,8 @@ function AppContent() {
               }`}>
               <div className="relative">
                 <MoreHorizontal size={20} strokeWidth={['present', 'budgets', 'plan', 'people', 'settings'].includes(screen) ? 2.5 : 2} />
-                {badgeCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-500" />
+                {(badgeCount > 0 || planBadgeCount > 0) && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500" />
                 )}
               </div>
               <span className="text-[10px]">More</span>
@@ -212,8 +218,15 @@ function AppContent() {
                 </button>
 
                 <button onClick={() => { setScreen('plan'); setMoreMenuOpen(false); }}
-                  className="p-3.5 rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/40 dark:to-orange-950/40 border border-amber-100 dark:border-amber-900 flex flex-col items-start gap-1 text-left">
-                  <CalendarClock size={20} className="text-amber-500 mb-1" />
+                  className="p-3.5 rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/40 dark:to-orange-950/40 border border-amber-100 dark:border-amber-900 flex flex-col items-start gap-1 text-left relative">
+                  <div className="flex items-center justify-between w-full mb-1">
+                    <CalendarClock size={20} className="text-amber-500" />
+                    {planBadgeCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-bold">
+                        {planBadgeCount} due
+                      </span>
+                    )}
+                  </div>
                   <span className="font-bold text-sm">Plan</span>
                   <span className="text-[11px] text-gray-500">Bills, forecast & budgets</span>
                 </button>

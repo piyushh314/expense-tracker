@@ -207,3 +207,75 @@ export function showBrowserNotification(title: string, options?: NotificationOpt
     }
   }
 }
+
+export interface PlanIcsCalendarOptions {
+  title: string;
+  amountPaise: number;
+  dueDate: string; // YYYY-MM-DD
+  reminderDaysBefore?: number;
+  note?: string;
+}
+
+/**
+ * Generate standard RFC 5545 iCalendar event for planned bills/expenses.
+ * Includes a native VALARM alert set N days before the due date.
+ */
+export function generatePlanIcsCalendarEvent(options: PlanIcsCalendarOptions): string {
+  const { title, amountPaise, dueDate, reminderDaysBefore = 3, note } = options;
+  const formattedAmount = formatINR(amountPaise);
+  const summary = `Bill Reminder: ${title} (${formattedAmount})`;
+  const description = `Upcoming ${title} for ${formattedAmount} is due on ${dueDate}.${
+    note ? ` Note: ${note}` : ''
+  }`;
+
+  const icsDate = formatIcsDate(dueDate);
+  const nowStamp = formatIcsTimestamp(new Date());
+  const uid = `${uuid()}@expensetracker.app`;
+
+  const dtStart = `${icsDate}T090000`;
+  const dtEnd = `${icsDate}T093000`;
+  const triggerDays = Math.max(0, reminderDaysBefore);
+
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Personal Expense Tracker//Plan//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${nowStamp}`,
+    `DTSTART:${dtStart}`,
+    `DTEND:${dtEnd}`,
+    `SUMMARY:${summary}`,
+    `DESCRIPTION:${description}`,
+    'BEGIN:VALARM',
+    `TRIGGER:-P${triggerDays}D`,
+    'ACTION:DISPLAY',
+    `DESCRIPTION:${summary}`,
+    'END:VALARM',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+}
+
+/**
+ * Download standard .ics file for a planned item.
+ */
+export function downloadPlanIcsFile(item: {
+  title: string;
+  amount: number;
+  dueDate: string;
+  reminderDaysBefore?: number;
+  note?: string;
+}): void {
+  const ics = generatePlanIcsCalendarEvent({
+    title: item.title,
+    amountPaise: item.amount,
+    dueDate: item.dueDate,
+    reminderDaysBefore: item.reminderDaysBefore,
+    note: item.note,
+  });
+  const safeFilename = `plan-${item.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${item.dueDate}.ics`;
+  downloadIcsFile(safeFilename, ics);
+}

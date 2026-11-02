@@ -29,14 +29,17 @@ import {
 import {
   getItemDisplayStatus,
   calculateSafeToSpendPerDay,
+  calculateMonthForecast,
   suggestEstimateAmount,
 } from '../utils/planForecast';
 import { getEffectiveExpensePaise } from '../utils/peopleLedger';
 import { useSettings } from '../contexts/SettingsContext';
 import { useToast } from '../contexts/ToastContext';
+import { downloadPlanIcsFile } from '../utils/reminders';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import AddEditPlannedItemModal from '../components/plan/AddEditPlannedItemModal';
 import QuickAdd from '../components/QuickAdd';
+import CanIAffordThis from '../components/plan/CanIAffordThis';
 import type { PlannedItem, Budget } from '../types';
 
 type PlanTab = 'timeline' | 'budgets';
@@ -174,6 +177,33 @@ export default function PlanScreen() {
     unpaidPlannedExpensesThisMonthPaise: summary.totalDueInMonthPaise,
     daysLeftInMonth: daysLeft,
   });
+
+  const forecast = useMemo(() => {
+    const startD = new Date(range.from + 'T00:00:00');
+    const todayD = new Date(todayStr + 'T00:00:00');
+    const diffTime = todayD.getTime() - startD.getTime();
+    const daysElapsed = Math.max(1, Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1);
+
+    return calculateMonthForecast({
+      monthlyBudgetPaise: overallBudgetPaise,
+      spentSoFarPaise: totalSpentPaise,
+      plannedItems: allPlannedItems,
+      currentMonthRange: range,
+      daysElapsedSoFar: daysElapsed,
+      daysLeftInMonth: daysLeft,
+      startingBalancePaise: settings.startingBalance,
+      monthlyIncomePaise: settings.monthlyIncome,
+    });
+  }, [
+    overallBudgetPaise,
+    totalSpentPaise,
+    allPlannedItems,
+    range,
+    todayStr,
+    daysLeft,
+    settings.startingBalance,
+    settings.monthlyIncome,
+  ]);
 
   // Action handlers
   const handleMarkPaid = (item: PlannedItem) => {
@@ -362,6 +392,17 @@ export default function PlanScreen() {
 
               <button
                 onClick={() => {
+                  downloadPlanIcsFile(item);
+                  showToast(`Downloaded calendar alert for ${item.title}`);
+                }}
+                className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-indigo-500 transition-colors"
+                title="Add to phone calendar (.ics)"
+              >
+                <Calendar size={13} />
+              </button>
+
+              <button
+                onClick={() => {
                   setEditingItem(item);
                   setIsAddEditOpen(true);
                 }}
@@ -475,6 +516,29 @@ export default function PlanScreen() {
               <p className="text-[11px] text-gray-400 mt-0.5">Affects safe-spend</p>
             </div>
           </div>
+
+          {/* "Can I Afford This" Simulation Widget */}
+          <CanIAffordThis
+            forecast={forecast}
+            onAddToPlan={({ amountPaise, title, kind }) => {
+              setEditingItem({
+                id: '',
+                title,
+                amount: amountPaise,
+                amountType: 'exact',
+                dueDate: todayStr,
+                categoryId: '',
+                repeat: 'none',
+                reminderDaysBefore: 3,
+                note: '',
+                status: 'upcoming',
+                kind,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+              setIsAddEditOpen(true);
+            }}
+          />
 
           {/* Timeline Groups */}
           <div className="space-y-4">

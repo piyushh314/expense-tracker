@@ -6,8 +6,9 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import type { TransactionFilter, DateRange, Person } from '../types';
 import { useSettings } from '../contexts/SettingsContext';
-import { getCurrentMonth, getPreviousMonth } from '../utils/date';
+import { getCurrentMonth, getPreviousMonth, today } from '../utils/date';
 import { computePersonBalance } from '../utils/peopleLedger';
+import { getItemDisplayStatus } from '../utils/planForecast';
 
 export function useCategories(type?: 'expense' | 'income') {
   return useLiveQuery(async () => {
@@ -234,4 +235,44 @@ export function usePeopleLedgerSummary() {
     };
   }, [people, entries, settlements]);
 }
+
+export function usePlanSummary() {
+  const plannedItems = useLiveQuery(() => db.plannedItems.toArray()) ?? [];
+  const todayStr = today();
+
+  return useMemo(() => {
+    let overdueCount = 0;
+    let dueSoonCount = 0;
+    let totalUnpaidPaise = 0;
+    const alertItems: Array<{ item: typeof plannedItems[0]; status: 'overdue' | 'due_soon' }> = [];
+
+    plannedItems.forEach(item => {
+      if (item.status === 'upcoming') {
+        totalUnpaidPaise += item.amount;
+        const status = getItemDisplayStatus(item, todayStr);
+        if (status === 'overdue') {
+          overdueCount++;
+          alertItems.push({ item, status: 'overdue' });
+        } else if (status === 'due_soon') {
+          dueSoonCount++;
+          alertItems.push({ item, status: 'due_soon' });
+        }
+      }
+    });
+
+    // Sort alerts: overdue first, then by earliest due date
+    alertItems.sort((a, b) => a.item.dueDate.localeCompare(b.item.dueDate));
+
+    return {
+      plannedItems,
+      totalUnpaidPaise,
+      overdueCount,
+      dueSoonCount,
+      badgeCount: overdueCount + dueSoonCount,
+      alertItems,
+      topAlert: alertItems[0] || null,
+    };
+  }, [plannedItems, todayStr]);
+}
+
 

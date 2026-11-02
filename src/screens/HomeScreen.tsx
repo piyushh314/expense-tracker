@@ -1,18 +1,23 @@
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowRight, TrendingUp, Wallet, ShieldCheck, Users, X, AlertCircle } from 'lucide-react';
+import { ArrowRight, TrendingUp, Wallet, ShieldCheck, Users, X, AlertCircle, CalendarClock, Calendar } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
-import { getCurrentMonth, getDaysRemaining, formatMonthYear, today } from '../utils/date';
+import { getCurrentMonth, getDaysRemaining, formatMonthYear, formatDateShort, today } from '../utils/date';
 import { getEffectiveExpensePaise, getPersonInitials } from '../utils/peopleLedger';
 import { calculateMonthForecast } from '../utils/planForecast';
-import { usePeopleLedgerSummary } from '../hooks/useDatabase';
+import { usePeopleLedgerSummary, usePlanSummary } from '../hooks/useDatabase';
 import { useSettings } from '../contexts/SettingsContext';
+import { useToast } from '../contexts/ToastContext';
+import { downloadPlanIcsFile } from '../utils/reminders';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import SettleSheet from '../components/people/SettleSheet';
 import ReminderSheet from '../components/people/ReminderSheet';
-import type { Transaction, Person } from '../types';
+import QuickAdd from '../components/QuickAdd';
+import CanIAffordThis from '../components/plan/CanIAffordThis';
+import AddEditPlannedItemModal from '../components/plan/AddEditPlannedItemModal';
+import type { Transaction, Person, PlannedItem } from '../types';
 
 interface HomeScreenProps {
   onNavigate: (screen: string) => void;
@@ -89,9 +94,15 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
   }, [monthTxns, catMap, totalSpent]);
 
   const peopleSummary = usePeopleLedgerSummary();
+  const planSummary = usePlanSummary();
+  const { showToast } = useToast();
   const [dismissedReminderPersonId, setDismissedReminderPersonId] = useState<string | null>(null);
+  const [dismissedPlanAlertId, setDismissedPlanAlertId] = useState<string | null>(null);
   const [settlePerson, setSettlePerson] = useState<Person | null>(null);
   const [reminderPerson, setReminderPerson] = useState<Person | null>(null);
+  const [quickPayPlanItem, setQuickPayPlanItem] = useState<PlannedItem | null>(null);
+  const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
+  const [prefillPlanItem, setPrefillPlanItem] = useState<PlannedItem | null>(null);
 
   // Active top reminder: first unsettled person who isn't dismissed
   const activeReminder = useMemo(() => {
@@ -101,6 +112,11 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
       return true;
     }) || null;
   }, [peopleSummary.unsettledPeople, dismissedReminderPersonId, settings.remindersForDebtsIOwe]);
+
+  // Active top planned bill reminder (due soon or overdue)
+  const activePlanAlert = useMemo(() => {
+    return planSummary.alertItems.find(a => a.item.id !== dismissedPlanAlertId) || null;
+  }, [planSummary.alertItems, dismissedPlanAlertId]);
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -116,6 +132,73 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
         <h1 className="text-xl font-bold">{greeting} 👋</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">{formatMonthYear(today())}</p>
       </div>
+
+      {/* Top In-App Planned Bill Reminder Card (Due soon / Overdue) */}
+      {activePlanAlert && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`p-3.5 rounded-2xl border shadow-sm ${
+            activePlanAlert.status === 'overdue'
+              ? 'bg-gradient-to-r from-red-500/10 via-rose-500/10 to-red-500/10 dark:from-red-500/20 dark:to-rose-500/20 border-red-200 dark:border-red-800'
+              : 'bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 dark:from-amber-500/20 dark:to-orange-500/20 border-amber-200 dark:border-amber-800'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2.5">
+            <div
+              className="flex items-center gap-3 cursor-pointer flex-1 min-w-0"
+              onClick={() => onNavigate('plan')}
+            >
+              <div
+                className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-xs shrink-0 shadow-sm ${
+                  activePlanAlert.status === 'overdue' ? 'bg-red-500' : 'bg-amber-500'
+                }`}
+              >
+                <CalendarClock size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-gray-900 dark:text-gray-100 truncate">
+                  {activePlanAlert.status === 'overdue' ? 'Overdue: ' : 'Upcoming Bill: '}
+                  {activePlanAlert.item.title} ({formatINR(activePlanAlert.item.amount)})
+                </p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 font-medium mt-0.5">
+                  Due on {formatDateShort(activePlanAlert.item.dueDate)}
+                  {planSummary.badgeCount > 1 && (
+                    <span className="opacity-75"> · +{planSummary.badgeCount - 1} more planned</span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => {
+                  downloadPlanIcsFile(activePlanAlert.item);
+                  showToast('Downloaded calendar alert (.ics)');
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 text-xs font-bold transition-all active:scale-95 shadow-sm flex items-center gap-1"
+                title="Add to phone calendar"
+              >
+                <Calendar size={13} />
+                Calendar
+              </button>
+              <button
+                onClick={() => setQuickPayPlanItem(activePlanAlert.item)}
+                className="px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold shadow-sm transition-all active:scale-95"
+              >
+                Pay Now
+              </button>
+              <button
+                onClick={() => setDismissedPlanAlertId(activePlanAlert.item.id)}
+                className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                title="Dismiss reminder"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Top In-App Reminder Card (e.g. "Rohit owes you 340 for 12 days") */}
       {activeReminder && (
@@ -246,6 +329,30 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
           </button>
         )}
       </motion.div>
+
+      {/* "Can I Afford This" simulation widget */}
+      <CanIAffordThis
+        forecast={forecast}
+        compact={true}
+        onAddToPlan={({ amountPaise, title, kind }) => {
+          setPrefillPlanItem({
+            id: '',
+            title,
+            amount: amountPaise,
+            amountType: 'exact',
+            dueDate: today(),
+            categoryId: '',
+            repeat: 'none',
+            reminderDaysBefore: 3,
+            note: '',
+            status: 'upcoming',
+            kind,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+          setIsPlanModalOpen(true);
+        }}
+      />
 
       {/* People Summary Strip (shown if any balance != 0) */}
       {(peopleSummary.totalOwedToMe > 0 || peopleSummary.totalIOwe > 0) && (
@@ -420,6 +527,23 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
           }}
         />
       )}
+
+      {/* Quick Pay Sheet for planned bills from Home reminder */}
+      <QuickAdd
+        isOpen={!!quickPayPlanItem}
+        onClose={() => setQuickPayPlanItem(null)}
+        payPlannedItem={quickPayPlanItem}
+      />
+
+      {/* Add Planned Item Modal from "Can I Afford This" */}
+      <AddEditPlannedItemModal
+        isOpen={isPlanModalOpen}
+        onClose={() => {
+          setIsPlanModalOpen(false);
+          setPrefillPlanItem(null);
+        }}
+        editItem={prefillPlanItem}
+      />
     </div>
   );
 }
