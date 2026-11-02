@@ -81,7 +81,15 @@ export default function InsightsScreen() {
   // Prepare chart data
   const categoryChartData = metrics.byCategory.slice(0, 8).map(c => {
     const cat = catMap.get(c.categoryId);
-    return { name: cat?.name || '?', amount: c.amount / 100, paise: c.amount, pct: c.percentage, fill: cat?.color || '#94A3B8' };
+    return {
+      categoryId: c.categoryId,
+      name: cat?.name || '?',
+      icon: cat?.icon || 'HelpCircle',
+      amount: c.amount / 100,
+      paise: c.amount,
+      pct: c.percentage,
+      fill: cat?.color || '#94A3B8',
+    };
   });
 
   const dailyChartData = metrics.dailySpend.map(d => ({
@@ -170,32 +178,29 @@ export default function InsightsScreen() {
           <BarChart3 size={16} className="text-indigo-500" /> Where the Money Went
         </h3>
         <div className="space-y-3">
-          {categoryChartData.map(item => {
-            const cat = categories.find(c => c.name === item.name);
-            return (
-              <div key={item.name} className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: item.fill + '15' }}>
-                  <DynamicIcon name={cat?.icon || 'HelpCircle'} size={16} style={{ color: item.fill }} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold truncate">{item.name}</span>
-                    <span className="text-xs font-bold text-gray-500">{item.pct}%</span>
-                  </div>
-                  <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-                    <motion.div
-                      initial={{ width: 0 }} animate={{ width: `${item.pct}%` }}
-                      transition={{ duration: 0.8, ease: 'easeOut' }}
-                      className="h-full rounded-full" style={{ backgroundColor: item.fill }}
-                    />
-                  </div>
-                </div>
-                <span className="text-xs font-semibold text-gray-600 dark:text-gray-400 shrink-0 w-20 text-right">
-                  {formatINR(item.paise)}
-                </span>
+          {categoryChartData.map((item, idx) => (
+            <div key={item.categoryId || `${item.name}-${idx}`} className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: item.fill + '15' }}>
+                <DynamicIcon name={item.icon} size={16} style={{ color: item.fill }} />
               </div>
-            );
-          })}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold truncate">{item.name}</span>
+                  <span className="text-xs font-bold text-gray-500">{item.pct}%</span>
+                </div>
+                <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }} animate={{ width: `${item.pct}%` }}
+                    transition={{ duration: 0.8, ease: 'easeOut' }}
+                    className="h-full rounded-full" style={{ backgroundColor: item.fill }}
+                  />
+                </div>
+              </div>
+              <span className="text-xs font-semibold text-gray-600 dark:text-gray-400 shrink-0 w-20 text-right">
+                {formatINR(item.paise)}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
 
