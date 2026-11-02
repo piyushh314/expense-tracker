@@ -1,6 +1,7 @@
 // ============================================================
 // Custom hooks for database queries
 // ============================================================
+import { useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import type { TransactionFilter, DateRange } from '../types';
@@ -140,6 +141,31 @@ export function useLedgerEntries(personId?: string) {
     }
     return db.ledgerEntries.toArray();
   }, [personId]) ?? [];
+}
+
+export function useSettlements(personId?: string) {
+  return useLiveQuery(async () => {
+    if (personId) {
+      return db.settlements.where('personId').equals(personId).toArray();
+    }
+    return db.settlements.toArray();
+  }, [personId]) ?? [];
+}
+
+export function useFrequentPeople() {
+  const persons = usePersons();
+  const ledgerEntries = useLiveQuery(() => db.ledgerEntries.toArray()) ?? [];
+  return useMemo(() => {
+    const counts = new Map<string, number>();
+    ledgerEntries.forEach(e => counts.set(e.personId, (counts.get(e.personId) || 0) + 1));
+    return [...persons]
+      .filter(p => !p.archived)
+      .sort((a, b) => {
+        const ca = counts.get(a.id) || 0;
+        const cb = counts.get(b.id) || 0;
+        return cb - ca;
+      });
+  }, [persons, ledgerEntries]);
 }
 
 export function useCategoryUsageCount(): Map<string, number> {

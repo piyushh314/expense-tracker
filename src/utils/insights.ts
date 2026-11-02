@@ -2,6 +2,7 @@ import type { Transaction, Category, InsightCard } from '../types';
 import type { DateRange } from './date';
 import { getDaysInRange, getWeekdayIndex, getDaysRemaining } from './date';
 import { formatINR } from './money';
+import { getEffectiveExpensePaise } from './peopleLedger';
 
 export interface PeriodMetrics {
   totalSpent: number;
@@ -32,19 +33,19 @@ export function calculateMetrics(
   const expenses = transactions.filter(t => t.type === 'expense');
   const incomes = transactions.filter(t => t.type === 'income');
 
-  const totalSpent = expenses.reduce((s, t) => s + t.amount, 0);
+  const totalSpent = expenses.reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
   const totalIncome = incomes.reduce((s, t) => s + t.amount, 0);
   const days = getDaysInRange(range);
   const numDays = Math.max(days.length, 1);
   const averagePerDay = Math.round(totalSpent / numDays);
 
   const biggestExpense = expenses.length > 0
-    ? expenses.reduce((max, t) => t.amount > max.amount ? t : max, expenses[0])
+    ? expenses.reduce((max, t) => getEffectiveExpensePaise(t) > getEffectiveExpensePaise(max) ? t : max, expenses[0])
     : null;
 
   // By category
   const catTotals = new Map<string, number>();
-  expenses.forEach(t => catTotals.set(t.categoryId, (catTotals.get(t.categoryId) || 0) + t.amount));
+  expenses.forEach(t => catTotals.set(t.categoryId, (catTotals.get(t.categoryId) || 0) + getEffectiveExpensePaise(t)));
   const byCategory = Array.from(catTotals.entries())
     .map(([categoryId, amount]) => ({ categoryId, amount, percentage: totalSpent > 0 ? Math.round(amount / totalSpent * 100) : 0 }))
     .sort((a, b) => b.amount - a.amount);
@@ -52,7 +53,7 @@ export function calculateMetrics(
 
   // By payment method
   const pmTotals = new Map<string, number>();
-  expenses.forEach(t => pmTotals.set(t.paymentMethodId, (pmTotals.get(t.paymentMethodId) || 0) + t.amount));
+  expenses.forEach(t => pmTotals.set(t.paymentMethodId, (pmTotals.get(t.paymentMethodId) || 0) + getEffectiveExpensePaise(t)));
   const byPaymentMethod = Array.from(pmTotals.entries())
     .map(([paymentMethodId, amount]) => ({ paymentMethodId, amount, percentage: totalSpent > 0 ? Math.round(amount / totalSpent * 100) : 0 }))
     .sort((a, b) => b.amount - a.amount);
@@ -61,7 +62,7 @@ export function calculateMetrics(
   const weekdayData: { amount: number; count: number }[] = Array(7).fill(null).map(() => ({ amount: 0, count: 0 }));
   expenses.forEach(t => {
     const day = getWeekdayIndex(t.date);
-    weekdayData[day].amount += t.amount;
+    weekdayData[day].amount += getEffectiveExpensePaise(t);
     weekdayData[day].count++;
   });
   const byWeekday = weekdayData.map((d, i) => ({ day: i, dayName: WEEKDAY_NAMES[i], ...d }));
@@ -69,14 +70,14 @@ export function calculateMetrics(
   // Daily spend
   const dailyMap = new Map<string, number>();
   days.forEach(d => dailyMap.set(d, 0));
-  expenses.forEach(t => { if (dailyMap.has(t.date)) dailyMap.set(t.date, (dailyMap.get(t.date) || 0) + t.amount); });
+  expenses.forEach(t => { if (dailyMap.has(t.date)) dailyMap.set(t.date, (dailyMap.get(t.date) || 0) + getEffectiveExpensePaise(t)); });
   const dailySpend = Array.from(dailyMap.entries()).map(([date, amount]) => ({ date, amount }));
 
   // Comparison
   let comparison: PeriodMetrics['comparison'];
   if (previousTransactions) {
     const prevExpenses = previousTransactions.filter(t => t.type === 'expense');
-    const prevTotal = prevExpenses.reduce((s, t) => s + t.amount, 0);
+    const prevTotal = prevExpenses.reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
     const changeAmount = totalSpent - prevTotal;
     const changePercentage = prevTotal > 0 ? Math.round(Math.abs(changeAmount) / prevTotal * 100) : 0;
     comparison = {

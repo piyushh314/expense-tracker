@@ -4,8 +4,9 @@
 // Dates are calendar dates (YYYY-MM-DD).
 // ============================================================
 
-import type { LedgerEntry, Settlement } from '../types';
+import type { LedgerEntry, Settlement, SplitMode, LedgerDirection, LedgerKind } from '../types';
 import { differenceInDays, parseISO } from 'date-fns';
+import { formatINR } from './money';
 
 export interface ParticipantShare {
   id: string; // 'me' or personId
@@ -370,3 +371,205 @@ export function getPersonAvatarColor(name: string): string {
   const index = Math.abs(hash) % AVATAR_COLORS.length;
   return AVATAR_COLORS[index];
 }
+
+/**
+ * Accounting Rule: Only MY SHARE of a purchase counts as an expense.
+ * Standalone loans and someone else's share of a purchase are NEVER counted as spending.
+ * If mySharePaise is set on an expense, use that.
+ * Otherwise, default to t.amount.
+ * Non-expense transactions return 0.
+ */
+export function getEffectiveExpensePaise(t: {
+  type: string;
+  amount: number;
+  mySharePaise?: number;
+}): number {
+  if (t.type !== 'expense') return 0;
+  return t.mySharePaise !== undefined ? t.mySharePaise : t.amount;
+}
+
+export interface ParticipantEntryPlan {
+  personId: string;
+  direction: LedgerDirection;
+  kind: LedgerKind;
+  amountPaise: number;
+}
+
+export interface TransactionSplitComputation {
+  mySharePaise: number;
+  participantEntries: ParticipantEntryPlan[];
+  summaryText: string;
+  isValid: boolean;
+  validationError?: string;
+}
+
+/**
+ * Pure accounting calculation for transaction splits (The Milk case, Chai case, etc.)
+ */
+export function computeTransactionSplits(params: {
+  totalPaise: number;
+  paidBy: 'me' | string;
+  splitMode: SplitMode;
+  participantPersonIds: string[];
+  personNamesById?: Map<string, string>;
+  customShares?: Record<string, number>; // id ('me' or personId) -> amount in paise
+}): TransactionSplitComputation {
+  const { totalPaise, paidBy, splitMode, participantPersonIds, personNamesById, customShares } = params;
+
+  if (totalPaise <= 0) {
+    return {
+      mySharePaise: 0,
+      participantEntries: [],
+      summaryText: '',
+      isValid: true,
+    };
+  }
+
+  const getName = (id: string) => personNamesById?.get(id) || 'Someone';
+
+  // If paid by Me
+  if (paidBy === 'me') {
+    if (splitMode === 'none' || participantPersonIds.length === 0) {
+      return {
+        mySharePaise: totalPaise,
+        participantEntries: [],
+        summaryText: `You spend ${formatINR(totalPaise)}`,
+        isValid: true,
+      };
+    }
+
+    if (splitMode === 'equally') {
+      const allIds = ['me', ...participantPersonIds];
+      const res = splitEqually(totalPaise, allIds);
+      const entries: ParticipantEntryPlan[] = participantPersonIds.map(id => ({
+        personId: id,
+        direction: 'they_owe_me',
+        kind: 'shared_purchase',
+        amountPaise: res.shares.find(s => s.id === id)?.amountPaise || 0,
+      }));
+
+      const summaryParts = entries.map(e => `${getName(e.personId)} owes you ${formatINR(e.amountPaise)}`);
+      return {
+        mySharePaise: res.mySharePaise,
+        participantEntries: entries,
+        summaryText: `You spend ${formatINR(res.mySharePaise)}. ${summaryParts.join('. ')}`,
+        isValid: true,
+      };
+    }
+
+    if (splitMode === 'fully_theirs') {
+      const res = splitFullyTheirs(totalPaise, participantPersonIds);
+      const entries: ParticipantEntryPlan[] = participantPersonIds.map(id => ({
+        personId: id,
+        direction: 'they_owe_me',
+        kind: 'paid_for_them',
+        amountPaise: res.shares.find(s => s.id === id)?.amountPaise || 0,
+      }));
+
+      const summaryParts = entries.map(e => `${getName(e.personId)} owes you ${formatINR(e.amountPaise)}`);
+      return {
+        mySharePaise: 0,
+        participantEntries: entries,
+        summaryText: `You spend ${formatINR(0)}. ${summaryParts.join('. ')}`,
+        isValid: true,
+      };
+    }
+
+    if (splitMode === 'custom') {
+      const allIds = ['me', ...participantPersonIds];
+      const shares = allIds.map(id => ({
+        id,
+        amountPaise: customShares?.[id] || 0,
+      }));
+      const validation = validateCustomSplit(totalPaise, shares);
+      const myShare = customShares?.['me'] || 0;
+      const entries: ParticipantEntryPlan[] = participantPersonIds.map(id => ({
+        personId: id,
+        direction: 'they_owe_me',
+        kind: 'shared_purchase',
+        amountPaise: customShares?.[id] || 0,
+      }));
+
+      const summaryParts = entries.map(e => `${getName(e.personId)} owes you ${formatINR(e.amountPaise)}`);
+      return {
+        mySharePaise: myShare,
+        participantEntries: entries,
+        summaryText: `You spend ${formatINR(myShare)}. ${summaryParts.join('. ')}`,
+        isValid: validation.valid,
+        validationError: validation.valid ? undefined : `Custom shares do not add up to ${formatINR(totalPaise)}`,
+      };
+    }
+  }
+
+  // If paid by a Person (paidBy is personId)
+  const payerId = paidBy;
+  const payerName = getName(payerId);
+
+  if (splitMode === 'fully_mine') {
+    return {
+      mySharePaise: totalPaise,
+      participantEntries: [
+        {
+          personId: payerId,
+          direction: 'i_owe_them',
+          kind: 'paid_for_me',
+          amountPaise: totalPaise,
+        },
+      ],
+      summaryText: `You spend ${formatINR(totalPaise)}. You owe ${payerName} ${formatINR(totalPaise)}.`,
+      isValid: true,
+    };
+  }
+
+  if (splitMode === 'equally') {
+    // Other participants besides payer and me
+    const others = participantPersonIds.filter(id => id !== payerId);
+    const allIds = ['me', payerId, ...others];
+    const res = splitEqually(totalPaise, allIds);
+    const myShare = res.mySharePaise;
+
+    return {
+      mySharePaise: myShare,
+      participantEntries: [
+        {
+          personId: payerId,
+          direction: 'i_owe_them',
+          kind: 'shared_purchase',
+          amountPaise: myShare,
+        },
+      ],
+      summaryText: `You spend ${formatINR(myShare)}. You owe ${payerName} ${formatINR(myShare)}.`,
+      isValid: true,
+    };
+  }
+
+  if (splitMode === 'custom') {
+    const myShare = customShares?.['me'] || 0;
+    const isValid = myShare <= totalPaise;
+
+    return {
+      mySharePaise: myShare,
+      participantEntries: [
+        {
+          personId: payerId,
+          direction: 'i_owe_them',
+          kind: 'shared_purchase',
+          amountPaise: myShare,
+        },
+      ],
+      summaryText: `You spend ${formatINR(myShare)}. You owe ${payerName} ${formatINR(myShare)}.`,
+      isValid,
+      validationError: isValid ? undefined : `Your share cannot exceed total ${formatINR(totalPaise)}`,
+    };
+  }
+
+  // Fallback
+  return {
+    mySharePaise: totalPaise,
+    participantEntries: [],
+    summaryText: `You spend ${formatINR(totalPaise)}`,
+    isValid: true,
+  };
+}
+
+

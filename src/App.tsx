@@ -42,7 +42,7 @@ function AppContent() {
     { id: 'insights', icon: BarChart3, label: 'Insights' },
     { id: 'present', icon: Presentation, label: 'Present' },
     { id: 'budgets', icon: Wallet, label: 'Budgets' },
-    { id: 'people', icon: Users, label: 'Splits' },
+    { id: 'people', icon: Users, label: 'People' },
   ];
 
   // Don't show tab bar in presentation mode
@@ -208,8 +208,8 @@ function AppContent() {
                 <button onClick={() => { setScreen('people'); setMoreMenuOpen(false); }}
                   className="p-3.5 rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/40 border border-emerald-100 dark:border-emerald-900 flex flex-col items-start gap-1 text-left">
                   <Users size={20} className="text-emerald-500 mb-1" />
-                  <span className="font-bold text-sm">Split & Friends</span>
-                  <span className="text-[11px] text-gray-500">Who owes whom</span>
+                  <span className="font-bold text-sm">People</span>
+                  <span className="text-[11px] text-gray-500">Lend & owe ledger</span>
                 </button>
 
                 <button onClick={() => { setScreen('settings'); setMoreMenuOpen(false); }}

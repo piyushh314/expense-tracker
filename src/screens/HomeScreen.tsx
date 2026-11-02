@@ -5,6 +5,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
 import { getCurrentMonth, getDaysRemaining, formatMonthYear, today } from '../utils/date';
+import { getEffectiveExpensePaise } from '../utils/peopleLedger';
 import { useSettings } from '../contexts/SettingsContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import type { Transaction } from '../types';
@@ -34,7 +35,7 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
     () => db.transactions.orderBy('createdAt').reverse().limit(5).toArray()
   ) ?? [];
 
-  const totalSpent = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+  const totalSpent = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
   const totalIncome = monthTxns.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
   const budgetAmount = settings.monthlyBudget || 0;
   const budgetPct = budgetAmount > 0 ? Math.round((totalSpent / budgetAmount) * 100) : 0;
@@ -45,7 +46,7 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
   const topCategory = useMemo(() => {
     const totals = new Map<string, number>();
     monthTxns.filter(t => t.type === 'expense').forEach(t => {
-      totals.set(t.categoryId, (totals.get(t.categoryId) || 0) + t.amount);
+      totals.set(t.categoryId, (totals.get(t.categoryId) || 0) + getEffectiveExpensePaise(t));
     });
     let maxId = '';
     let maxAmt = 0;
@@ -202,9 +203,14 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
                       )}
                     </div>
                     {txn.note && <p className="text-xs text-gray-500 truncate">{txn.note}</p>}
+                    {txn.type === 'expense' && txn.splitMode && txn.splitMode !== 'none' && (
+                      <span className="text-[10px] text-indigo-500 font-medium">
+                        Split · Total {formatINR(txn.amount)}
+                      </span>
+                    )}
                   </div>
                   <span className={`text-sm font-bold ${txn.type === 'income' ? 'text-green-500' : ''}`}>
-                    {txn.type === 'income' ? '+' : '-'}{formatINR(txn.amount)}
+                    {txn.type === 'income' ? '+' : '-'}{formatINR(txn.type === 'expense' ? getEffectiveExpensePaise(txn) : txn.amount)}
                   </span>
                 </motion.div>
               );

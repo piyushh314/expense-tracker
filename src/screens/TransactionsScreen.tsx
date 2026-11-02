@@ -1,13 +1,15 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, SlidersHorizontal, X, Trash2, Copy, ArrowUpDown } from 'lucide-react';
+import { Search, SlidersHorizontal, X, Trash2, Copy, ArrowUpDown, AlertTriangle, Users } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
 import { formatDate, getCurrentMonth, getPreviousMonth, getCurrentWeek } from '../utils/date';
-import { usePaymentMethods } from '../hooks/useDatabase';
+import { usePaymentMethods, usePersons } from '../hooks/useDatabase';
 import { useSettings } from '../contexts/SettingsContext';
 import { useToast } from '../contexts/ToastContext';
+import { getEffectiveExpensePaise } from '../utils/peopleLedger';
+import { checkTransactionSettlements, deleteTransactionWithSplits } from '../utils/transactionLedger';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import type { Transaction, TransactionType, Scope } from '../types';
 import { v4 as uuid } from 'uuid';
@@ -24,6 +26,7 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
   const { showToast } = useToast();
   const allCategories = useLiveQuery(() => db.categories.toArray()) ?? [];
   const paymentMethods = usePaymentMethods();
+  const allPersons = usePersons();
 
   const [search, setSearch] = useState('');
   const [showFilters, setShowFilters] = useState(false);
@@ -34,6 +37,7 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
   const [filterType, setFilterType] = useState<TransactionType | 'all'>('all');
   const [filterScope, setFilterScope] = useState<Scope | 'all'>('all');
   const [showSortMenu, setShowSortMenu] = useState(false);
+  const [deleteWarningTxn, setDeleteWarningTxn] = useState<Transaction | null>(null);
 
   const catMap = useMemo(() => {
     const m = new Map<string, typeof allCategories[0]>();
@@ -46,6 +50,12 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
     paymentMethods.forEach(p => m.set(p.id, p));
     return m;
   }, [paymentMethods]);
+
+  const personMap = useMemo(() => {
+    const m = new Map<string, typeof allPersons[0]>();
+    allPersons.forEach(p => m.set(p.id, p));
+    return m;
+  }, [allPersons]);
 
   // Date range
   const dateRange = useMemo(() => {
@@ -94,7 +104,13 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
     switch (sortMode) {
       case 'newest': results.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt); break;
       case 'oldest': results.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt); break;
-      case 'highest': results.sort((a, b) => b.amount - a.amount); break;
+      case 'highest':
+        results.sort((a, b) => {
+          const valA = a.type === 'expense' ? getEffectiveExpensePaise(a) : a.amount;
+          const valB = b.type === 'expense' ? getEffectiveExpensePaise(b) : b.amount;
+          return valB - valA;
+        });
+        break;
     }
 
     return results;
@@ -108,16 +124,17 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
     let currentTotal = 0;
 
     filtered.forEach(t => {
+      const effAmt = t.type === 'expense' ? getEffectiveExpensePaise(t) : -t.amount;
       if (t.date !== currentDate) {
         if (currentGroup.length > 0) {
           groups.push({ date: currentDate, transactions: currentGroup, total: currentTotal });
         }
         currentDate = t.date;
         currentGroup = [t];
-        currentTotal = t.type === 'expense' ? t.amount : -t.amount;
+        currentTotal = effAmt;
       } else {
         currentGroup.push(t);
-        currentTotal += t.type === 'expense' ? t.amount : -t.amount;
+        currentTotal += effAmt;
       }
     });
     if (currentGroup.length > 0) {
@@ -126,11 +143,22 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
     return groups;
   }, [filtered]);
 
-  const handleDelete = async (txn: Transaction) => {
-    await db.transactions.delete(txn.id);
-    showToast('Transaction deleted', {
-      onUndo: async () => { await db.transactions.add(txn); },
+  const executeDelete = async (txn: Transaction) => {
+    const { undo, linkedCount } = await deleteTransactionWithSplits(txn);
+    showToast(`Transaction deleted${linkedCount > 0 ? ' (and linked splits)' : ''}`, {
+      onUndo: async () => {
+        await undo();
+      },
     });
+  };
+
+  const handleDelete = async (txn: Transaction) => {
+    const { hasSettlements } = await checkTransactionSettlements(txn.id);
+    if (hasSettlements) {
+      setDeleteWarningTxn(txn);
+      return;
+    }
+    await executeDelete(txn);
   };
 
   const handleDuplicate = async (txn: Transaction) => {
@@ -295,7 +323,7 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
       {/* Results count */}
       <div className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
         {filtered.length} transaction{filtered.length !== 1 ? 's' : ''}
-        {filtered.length > 0 && ` · Total: ${formatINR(filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0))} spent`}
+        {filtered.length > 0 && ` · Total: ${formatINR(filtered.filter(t => t.type === 'expense').reduce((s, t) => s + getEffectiveExpensePaise(t), 0))} spent`}
       </div>
 
       {/* Transaction Groups */}
@@ -326,6 +354,10 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
                 {group.transactions.map(txn => {
                   const cat = catMap.get(txn.categoryId);
                   const pm = pmMap.get(txn.paymentMethodId);
+                  const payer = txn.paidBy && txn.paidBy !== 'me' ? personMap.get(txn.paidBy) : null;
+                  const isSplit = txn.type === 'expense' && txn.splitMode && txn.splitMode !== 'none';
+                  const effectivePaise = txn.type === 'expense' ? getEffectiveExpensePaise(txn) : txn.amount;
+
                   return (
                     <motion.div
                       key={txn.id}
@@ -343,7 +375,7 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
 
                       {/* Details */}
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-semibold text-gray-900 dark:text-white truncate">
                             {cat?.name || 'Unknown'}
                           </span>
@@ -352,21 +384,32 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
                               {pm.name}
                             </span>
                           )}
+                          {payer && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-300 font-semibold shrink-0">
+                              Paid by {payer.name}
+                            </span>
+                          )}
                         </div>
                         {txn.note && (
                           <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
                             {txn.note}
                           </p>
                         )}
-                        {txn.tags.length > 0 && (
-                          <div className="flex gap-1 mt-1">
-                            {txn.tags.slice(0, 3).map(tag => (
-                              <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950 text-indigo-500 font-medium">
-                                #{tag}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                          {isSplit && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 font-semibold flex items-center gap-1">
+                              <Users size={10} />
+                              {txn.mySharePaise !== undefined && txn.mySharePaise !== txn.amount
+                                ? `Total ${formatINR(txn.amount)}`
+                                : 'Split'}
+                            </span>
+                          )}
+                          {txn.tags.slice(0, 3).map(tag => (
+                            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950 text-indigo-500 font-medium">
+                              #{tag}
+                            </span>
+                          ))}
+                        </div>
                       </div>
 
                       {/* Amount */}
@@ -374,8 +417,13 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
                         <span className={`text-sm font-bold ${
                           txn.type === 'income' ? 'text-green-500' : 'text-gray-900 dark:text-white'
                         }`}>
-                          {txn.type === 'income' ? '+' : '-'}{formatINR(txn.amount)}
+                          {txn.type === 'income' ? '+' : '-'}{formatINR(effectivePaise)}
                         </span>
+                        {isSplit && effectivePaise !== txn.amount && (
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                            your share
+                          </p>
+                        )}
                       </div>
 
                       {/* Action buttons (desktop hover) */}
@@ -399,6 +447,57 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
           ))}
         </div>
       )}
+
+      {/* Delete Warning Modal for settled splits */}
+      <AnimatePresence>
+        {deleteWarningTxn && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+              onClick={() => setDeleteWarningTxn(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[90vw] max-w-sm bg-white dark:bg-gray-900 rounded-3xl p-6 shadow-2xl border border-gray-100 dark:border-gray-800 text-center"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-3">
+                <AlertTriangle size={24} />
+              </div>
+              <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                Delete Settled Split?
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+                This transaction has split entries that have already been settled. Deleting it will delete the linked ledger entries and alter settlement records.
+              </p>
+              <div className="flex gap-2.5 mt-5">
+                <button
+                  type="button"
+                  onClick={() => setDeleteWarningTxn(null)}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-600 dark:text-gray-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const t = deleteWarningTxn;
+                    setDeleteWarningTxn(null);
+                    await executeDelete(t);
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-md shadow-rose-500/30"
+                >
+                  Delete Anyway
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

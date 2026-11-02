@@ -7,6 +7,8 @@ import {
   computePersonBalance,
   calculateFifoEntryStatuses,
   getPersonInitials,
+  getEffectiveExpensePaise,
+  computeTransactionSplits,
 } from '../peopleLedger';
 import type { LedgerEntry, Settlement } from '../../types';
 
@@ -319,4 +321,125 @@ describe('People Ledger Accounting & Math Utilities (Step 1)', () => {
       expect(getPersonInitials('Ananya Singh Rathore')).toBe('AR');
     });
   });
+
+  describe('5. Step 3: Transaction Split Computation & Accounting Rules', () => {
+    const personNames = new Map([
+      ['p_rohit', 'Rohit'],
+      ['p_priya', 'Priya'],
+    ]);
+
+    it('Scenario B: I paid for both, shared: milk 60, half his. My spend 30. He owes me 30.', () => {
+      const res = computeTransactionSplits({
+        totalPaise: 6000, // ₹60
+        paidBy: 'me',
+        splitMode: 'equally',
+        participantPersonIds: ['p_rohit'],
+        personNamesById: personNames,
+      });
+
+      expect(res.mySharePaise).toBe(3000); // ₹30
+      expect(res.participantEntries).toHaveLength(1);
+      expect(res.participantEntries[0]).toEqual({
+        personId: 'p_rohit',
+        direction: 'they_owe_me',
+        kind: 'shared_purchase',
+        amountPaise: 3000,
+      });
+      expect(res.summaryText).toBe('You spend ₹30. Rohit owes you ₹30');
+    });
+
+    it('Scenario C: I paid for him, fully his: his item 120. My spend 0. He owes me 120.', () => {
+      const res = computeTransactionSplits({
+        totalPaise: 12000, // ₹120
+        paidBy: 'me',
+        splitMode: 'fully_theirs',
+        participantPersonIds: ['p_rohit'],
+        personNamesById: personNames,
+      });
+
+      expect(res.mySharePaise).toBe(0);
+      expect(res.participantEntries).toHaveLength(1);
+      expect(res.participantEntries[0]).toEqual({
+        personId: 'p_rohit',
+        direction: 'they_owe_me',
+        kind: 'paid_for_them',
+        amountPaise: 12000,
+      });
+      expect(res.summaryText).toBe('You spend ₹0. Rohit owes you ₹120');
+    });
+
+    it('Scenario D1: He paid for me, fully mine: he bought my chai 40. My spend 40. I owe him 40.', () => {
+      const res = computeTransactionSplits({
+        totalPaise: 4000, // ₹40
+        paidBy: 'p_rohit',
+        splitMode: 'fully_mine',
+        participantPersonIds: [],
+        personNamesById: personNames,
+      });
+
+      expect(res.mySharePaise).toBe(4000);
+      expect(res.participantEntries).toHaveLength(1);
+      expect(res.participantEntries[0]).toEqual({
+        personId: 'p_rohit',
+        direction: 'i_owe_them',
+        kind: 'paid_for_me',
+        amountPaise: 4000,
+      });
+      expect(res.summaryText).toBe('You spend ₹40. You owe Rohit ₹40.');
+    });
+
+    it('Scenario D2: He paid for me, shared: we split a 200 bill. My spend 100. I owe him 100.', () => {
+      const res = computeTransactionSplits({
+        totalPaise: 20000, // ₹200
+        paidBy: 'p_rohit',
+        splitMode: 'equally',
+        participantPersonIds: ['p_rohit'],
+        personNamesById: personNames,
+      });
+
+      expect(res.mySharePaise).toBe(10000);
+      expect(res.participantEntries).toHaveLength(1);
+      expect(res.participantEntries[0]).toEqual({
+        personId: 'p_rohit',
+        direction: 'i_owe_them',
+        kind: 'shared_purchase',
+        amountPaise: 10000,
+      });
+      expect(res.summaryText).toBe('You spend ₹100. You owe Rohit ₹100.');
+    });
+
+    it('Three-way equal split: dinner 90 paid by me with Rohit and Priya', () => {
+      const res = computeTransactionSplits({
+        totalPaise: 9000,
+        paidBy: 'me',
+        splitMode: 'equally',
+        participantPersonIds: ['p_rohit', 'p_priya'],
+        personNamesById: personNames,
+      });
+
+      expect(res.mySharePaise).toBe(3000);
+      expect(res.participantEntries).toHaveLength(2);
+      expect(res.participantEntries.find(e => e.personId === 'p_rohit')?.amountPaise).toBe(3000);
+      expect(res.participantEntries.find(e => e.personId === 'p_priya')?.amountPaise).toBe(3000);
+      expect(res.summaryText).toBe('You spend ₹30. Rohit owes you ₹30. Priya owes you ₹30');
+    });
+
+    it('getEffectiveExpensePaise strictly uses mySharePaise and ignores loans/non-expenses', () => {
+      // Normal expense without split
+      expect(getEffectiveExpensePaise({ type: 'expense', amount: 5000 })).toBe(5000);
+
+      // Shared expense where my share is 3000 out of 6000
+      expect(getEffectiveExpensePaise({ type: 'expense', amount: 6000, mySharePaise: 3000 })).toBe(3000);
+
+      // Fully theirs expense where my share is 0
+      expect(getEffectiveExpensePaise({ type: 'expense', amount: 12000, mySharePaise: 0 })).toBe(0);
+
+      // Income transaction
+      expect(getEffectiveExpensePaise({ type: 'income', amount: 10000 })).toBe(0);
+
+      // Transfer / loan
+      expect(getEffectiveExpensePaise({ type: 'transfer', amount: 5000 })).toBe(0);
+    });
+  });
 });
+

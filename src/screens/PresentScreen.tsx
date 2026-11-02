@@ -7,6 +7,7 @@ import { db } from '../db';
 import { formatINR } from '../utils/money';
 import { getCurrentMonth, getPreviousMonth, getCurrentWeek, getCurrentYear, formatMonthYear, formatDateShort, today } from '../utils/date';
 import { calculateMetrics, generateInsightCards } from '../utils/insights';
+import { getEffectiveExpensePaise } from '../utils/peopleLedger';
 import { useSettings } from '../contexts/SettingsContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
 import type { DateRange } from '../utils/date';
@@ -63,7 +64,7 @@ export default function PresentScreen() {
   );
 
   const topExpenses = useMemo(
-    () => transactions.filter(t => t.type === 'expense').sort((a, b) => b.amount - a.amount).slice(0, 5),
+    () => transactions.filter(t => t.type === 'expense').sort((a, b) => getEffectiveExpensePaise(b) - getEffectiveExpensePaise(a)).slice(0, 5),
     [transactions]
   );
 
@@ -215,7 +216,7 @@ export default function PresentScreen() {
                   <p className="font-semibold">{cat?.name || 'Unknown'}</p>
                   {txn.note && <p className="text-sm opacity-60 truncate">{txn.note}</p>}
                 </div>
-                <span className="text-lg font-bold">{formatINR(txn.amount)}</span>
+                <span className="text-lg font-bold">{formatINR(getEffectiveExpensePaise(txn))}</span>
               </motion.div>
             );
           })}

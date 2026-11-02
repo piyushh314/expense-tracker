@@ -6,6 +6,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR, toPaise, toRupees } from '../utils/money';
 import { getCurrentMonth, getDaysRemaining, formatMonthYear, today } from '../utils/date';
+import { getEffectiveExpensePaise } from '../utils/peopleLedger';
 import { useSettings } from '../contexts/SettingsContext';
 import { useToast } from '../contexts/ToastContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
@@ -25,10 +26,10 @@ export default function BudgetsScreen() {
     [range.from, range.to]
   ) ?? [];
 
-  const totalSpent = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+  const totalSpent = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
   const spentByCategory = useMemo(() => {
     const m = new Map<string, number>();
-    monthTxns.filter(t => t.type === 'expense').forEach(t => m.set(t.categoryId, (m.get(t.categoryId) || 0) + t.amount));
+    monthTxns.filter(t => t.type === 'expense').forEach(t => m.set(t.categoryId, (m.get(t.categoryId) || 0) + getEffectiveExpensePaise(t)));
     return m;
   }, [monthTxns]);
 

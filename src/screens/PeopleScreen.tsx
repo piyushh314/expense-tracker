@@ -1,323 +1,473 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Users, CheckCircle2, Plus, ArrowUpRight, ArrowDownLeft, X, UserPlus } from 'lucide-react';
+import {
+  Users,
+  Plus,
+  ArrowUpRight,
+  ArrowDownLeft,
+  Search,
+  ArrowUpDown,
+  ChevronDown,
+  ChevronRight,
+  CheckCircle2,
+  Clock,
+  UserPlus,
+} from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { v4 as uuid } from 'uuid';
 import { db } from '../db';
-import { formatINR, toPaise } from '../utils/money';
-import { formatDate, today } from '../utils/date';
-import { useToast } from '../contexts/ToastContext';
-import { computePersonBalance, getPersonAvatarColor } from '../utils/peopleLedger';
-import type { Person, LedgerEntry, Settlement } from '../types';
+import { formatINR } from '../utils/money';
+import { computePersonBalance, getPersonInitials } from '../utils/peopleLedger';
+import type { Person } from '../types';
+import PersonDetailView from '../components/people/PersonDetailView';
+import AddPersonModal from '../components/people/AddPersonModal';
+import LendBorrowSheet from '../components/people/LendBorrowSheet';
+
+type FilterType = 'all' | 'owes_me' | 'i_owe' | 'settled';
+type SortType = 'biggest' | 'oldest' | 'name';
 
 export default function PeopleScreen() {
-  const { showToast } = useToast();
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [showAddPersonModal, setShowAddPersonModal] = useState(false);
-  const [showAddEntryModal, setShowAddEntryModal] = useState(false);
-  const [newPersonName, setNewPersonName] = useState('');
+  const [showLendBorrowSheet, setShowLendBorrowSheet] = useState(false);
 
-  // Add ledger entry states
-  const [selectedPersonId, setSelectedPersonId] = useState('');
-  const [entryAmount, setEntryAmount] = useState('');
-  const [entryDirection, setEntryDirection] = useState<'they_owe_me' | 'i_owe_them'>('they_owe_me');
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<FilterType>('all');
+  const [sort, setSort] = useState<SortType>('biggest');
+  const [showSortMenu, setShowSortMenu] = useState(false);
+  const [showSettledAccordion, setShowSettledAccordion] = useState(false);
 
-  const persons = useLiveQuery(() => db.persons.toArray()) ?? [];
-  const ledgerEntries = useLiveQuery(() => db.ledgerEntries.toArray()) ?? [];
+  // Live queries from Dexie
+  const people: Person[] = useLiveQuery(() => db.persons.toArray()) ?? [];
+  const entries = useLiveQuery(() => db.ledgerEntries.toArray()) ?? [];
   const settlements = useLiveQuery(() => db.settlements.toArray()) ?? [];
 
-  // Group balances per person using pure accounting utility
-  const balances = useMemo(() => {
+  // Compute derived balances for all people
+  const balancesMap = useMemo(() => {
     const map = new Map<string, ReturnType<typeof computePersonBalance>>();
-    persons.forEach(p => {
-      map.set(p.id, computePersonBalance(p.id, ledgerEntries, settlements));
+    people.forEach(p => {
+      map.set(p.id, computePersonBalance(p.id, entries, settlements));
     });
     return map;
-  }, [persons, ledgerEntries, settlements]);
+  }, [people, entries, settlements]);
 
-  // Overall totals
-  const overallOwedToMe = useMemo(() => {
-    let sum = 0;
-    balances.forEach(b => {
-      if (b.netPaise > 0) sum += b.netPaise;
+  // Overall totals across all people
+  const { totalOwedToMe, totalIOwe, netTotal } = useMemo(() => {
+    let owedToMe = 0;
+    let iOwe = 0;
+    balancesMap.forEach(b => {
+      if (b.netPaise > 0) owedToMe += b.netPaise;
+      else if (b.netPaise < 0) iOwe += Math.abs(b.netPaise);
     });
-    return sum;
-  }, [balances]);
+    return {
+      totalOwedToMe: owedToMe,
+      totalIOwe: iOwe,
+      netTotal: owedToMe - iOwe,
+    };
+  }, [balancesMap]);
 
-  const overallIOwe = useMemo(() => {
-    let sum = 0;
-    balances.forEach(b => {
-      if (b.netPaise < 0) sum += Math.abs(b.netPaise);
+  // Active people (unsettled or recently active) vs fully settled
+  const { activePeople, settledPeople } = useMemo(() => {
+    let list = people.filter(p => !p.archived);
+
+    // Search query
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(
+        p =>
+          p.name.toLowerCase().includes(q) ||
+          p.nickname?.toLowerCase().includes(q) ||
+          p.label.toLowerCase().includes(q)
+      );
+    }
+
+    // Filter
+    if (filter === 'owes_me') {
+      list = list.filter(p => (balancesMap.get(p.id)?.netPaise ?? 0) > 0);
+    } else if (filter === 'i_owe') {
+      list = list.filter(p => (balancesMap.get(p.id)?.netPaise ?? 0) < 0);
+    } else if (filter === 'settled') {
+      list = list.filter(p => (balancesMap.get(p.id)?.netPaise ?? 0) === 0);
+    }
+
+    // Sort function
+    list.sort((a, b) => {
+      const balA = balancesMap.get(a.id);
+      const balB = balancesMap.get(b.id);
+      if (sort === 'biggest') {
+        const absA = Math.abs(balA?.netPaise ?? 0);
+        const absB = Math.abs(balB?.netPaise ?? 0);
+        return absB - absA;
+      }
+      if (sort === 'oldest') {
+        const daysA = balA?.oldestUnsettledDays ?? -1;
+        const daysB = balB?.oldestUnsettledDays ?? -1;
+        return daysB - daysA;
+      }
+      return a.name.localeCompare(b.name);
     });
-    return sum;
-  }, [balances]);
 
-  const handleAddPerson = async () => {
-    if (!newPersonName.trim()) return;
-    const person: Person = {
-      id: uuid(),
-      name: newPersonName.trim(),
-      label: 'Friend',
-      color: getPersonAvatarColor(newPersonName.trim()),
-      archived: false,
-      createdAt: Date.now(),
-    };
-    await db.persons.add(person);
-    setNewPersonName('');
-    setShowAddPersonModal(false);
-    showToast(`${person.name} added`);
-  };
+    if (filter === 'all') {
+      const active = list.filter(p => (balancesMap.get(p.id)?.netPaise ?? 0) !== 0);
+      const settled = list.filter(p => (balancesMap.get(p.id)?.netPaise ?? 0) === 0);
+      return { activePeople: active, settledPeople: settled };
+    }
 
-  const handleAddManualEntry = async () => {
-    const paise = toPaise(parseFloat(entryAmount) || 0);
-    if (paise <= 0 || !selectedPersonId) return;
+    return { activePeople: list, settledPeople: [] };
+  }, [people, balancesMap, search, filter, sort]);
 
-    const entry: LedgerEntry = {
-      id: uuid(),
-      personId: selectedPersonId,
-      direction: entryDirection,
-      kind: 'loan',
-      amount: paise,
-      date: today(),
-      note: 'Manual loan / owed entry',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
+  // Selected person for detail view
+  const activePerson = useMemo(
+    () => people.find(p => p.id === selectedPersonId) || null,
+    [people, selectedPersonId]
+  );
 
-    await db.ledgerEntries.add(entry);
-    setEntryAmount('');
-    setShowAddEntryModal(false);
-    showToast('Ledger entry added');
-  };
-
-  const handleSettleAll = async (personId: string) => {
-    const b = balances.get(personId);
-    if (!b || b.netPaise === 0) return;
-
-    const settlement: Settlement = {
-      id: uuid(),
-      personId,
-      direction: b.netPaise > 0 ? 'they_paid_me' : 'i_paid_them',
-      amount: Math.abs(b.netPaise),
-      date: today(),
-      method: 'upi',
-      note: 'Full settlement',
-      createdAt: Date.now(),
-    };
-    await db.settlements.add(settlement);
-    const person = persons.find(p => p.id === personId);
-    showToast(`Settled with ${person?.name || 'person'}`);
-  };
+  // If a person is currently selected, render Person Detail View
+  if (activePerson) {
+    return (
+      <PersonDetailView
+        person={activePerson}
+        entries={entries}
+        settlements={settlements}
+        onBack={() => setSelectedPersonId(null)}
+        onPersonUpdated={() => {}}
+      />
+    );
+  }
 
   return (
-    <div className="pb-8 px-4 space-y-4">
-      <div className="pt-4 flex items-center justify-between">
+    <div className="pb-12 space-y-4">
+      {/* Top Header */}
+      <div className="pt-4 px-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold">Split & Owed Money</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Track who owes whom with friends & roommates</p>
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">People Ledger</h1>
+          <p className="text-xs text-gray-500 font-medium">Track money lent & owed with friends</p>
         </div>
-        <button onClick={() => setShowAddPersonModal(true)}
-          className="p-2.5 rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 transition-colors flex items-center gap-1.5 text-xs font-semibold shadow-md">
-          <UserPlus size={16} /> Add Friend
+
+        <button
+          onClick={() => setShowAddPersonModal(true)}
+          className="py-2.5 px-3.5 rounded-2xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-all active:scale-95"
+        >
+          <UserPlus size={16} /> Add Person
         </button>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded-2xl p-4 border border-emerald-100 dark:border-emerald-900">
-          <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-            <ArrowDownLeft size={16} />
-            <span className="text-xs font-semibold">You are owed</span>
+      {/* Top Owed / I Owe Cards */}
+      <div className="px-4">
+        <div className="grid grid-cols-2 gap-3">
+          {/* You are owed card */}
+          <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded-3xl p-4 border border-emerald-100 dark:border-emerald-900/60 shadow-sm">
+            <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+              <ArrowDownLeft size={16} />
+              <span className="text-xs font-bold tracking-wide uppercase">You are owed</span>
+            </div>
+            <p className="text-2xl font-extrabold text-emerald-700 dark:text-emerald-300 mt-1.5">
+              {formatINR(totalOwedToMe)}
+            </p>
           </div>
-          <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-1">{formatINR(overallOwedToMe)}</p>
-        </div>
-        <div className="bg-rose-50 dark:bg-rose-950/30 rounded-2xl p-4 border border-rose-100 dark:border-rose-900">
-          <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
-            <ArrowUpRight size={16} />
-            <span className="text-xs font-semibold">You owe</span>
+
+          {/* You owe card */}
+          <div className="bg-rose-50 dark:bg-rose-950/30 rounded-3xl p-4 border border-rose-100 dark:border-rose-900/60 shadow-sm">
+            <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
+              <ArrowUpRight size={16} />
+              <span className="text-xs font-bold tracking-wide uppercase">You owe</span>
+            </div>
+            <p className="text-2xl font-extrabold text-rose-700 dark:text-rose-300 mt-1.5">
+              {formatINR(totalIOwe)}
+            </p>
           </div>
-          <p className="text-2xl font-bold text-rose-700 dark:text-rose-300 mt-1">{formatINR(overallIOwe)}</p>
         </div>
+
+        {/* Net banner below */}
+        {(totalOwedToMe > 0 || totalIOwe > 0) && (
+          <div className="mt-2.5 px-4 py-2 bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 flex items-center justify-between text-xs">
+            <span className="text-gray-500 font-medium">Net balance across all people:</span>
+            <span
+              className={`font-bold ${
+                netTotal > 0
+                  ? 'text-emerald-500'
+                  : netTotal < 0
+                  ? 'text-rose-500'
+                  : 'text-gray-400'
+              }`}
+            >
+              {netTotal > 0
+                ? `+${formatINR(netTotal)} (in your favor)`
+                : netTotal < 0
+                ? `-${formatINR(Math.abs(netTotal))} (you owe net)`
+                : 'Balanced ₹0'}
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Action to log quick split */}
-      <div className="flex gap-2">
-        <button onClick={() => setShowAddEntryModal(true)}
-          className="flex-1 py-2.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 text-gray-700 dark:text-gray-300 hover:border-indigo-400 transition-colors">
-          <Plus size={14} /> Log Owed Amount
+      {/* Quick Action: Lend / Borrow standalone button */}
+      <div className="px-4">
+        <button
+          onClick={() => setShowLendBorrowSheet(true)}
+          disabled={people.length === 0}
+          className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20 transition-all active:scale-[0.99]"
+        >
+          <Plus size={16} /> Quick Lend or Borrow Money
         </button>
       </div>
 
-      {/* People Ledger List */}
-      <div>
-        <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Friends Balance</h2>
-        {persons.length === 0 ? (
-          <div className="text-center py-12 bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 p-6">
-            <Users size={32} className="mx-auto text-gray-400 mb-2" />
-            <p className="font-semibold text-sm">No people added yet</p>
-            <p className="text-xs text-gray-500 mt-1 mb-4">Add your friends or roommates to track split expenses</p>
-            <button onClick={() => setShowAddPersonModal(true)}
-              className="px-4 py-2 bg-indigo-500 text-white rounded-xl text-xs font-semibold">
-              Add First Friend
+      {/* Search, Filter & Sort Bar */}
+      <div className="px-4 space-y-2">
+        <div className="flex gap-2">
+          <div className="flex-1 relative">
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by name, label..."
+              className="w-full pl-9 pr-3 py-2.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-500/30 text-gray-900 dark:text-white"
+            />
+          </div>
+
+          {/* Sort dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowSortMenu(!showSortMenu)}
+              className="p-2.5 rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 transition-colors flex items-center gap-1 text-xs font-semibold"
+            >
+              <ArrowUpDown size={15} />
+            </button>
+            {showSortMenu && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setShowSortMenu(false)} />
+                <div className="absolute right-0 top-full mt-1 w-40 bg-white dark:bg-gray-900 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-800 z-30 py-1.5 overflow-hidden">
+                  {(
+                    [
+                      ['biggest', 'Biggest Amount'],
+                      ['oldest', 'Oldest Open'],
+                      ['name', 'Alphabetical'],
+                    ] as [SortType, string][]
+                  ).map(([s, label]) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setSort(s);
+                        setShowSortMenu(false);
+                      }}
+                      className={`w-full px-4 py-2.5 text-left text-xs transition-colors ${
+                        sort === s
+                          ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 font-bold'
+                          : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Filter Pills */}
+        <div className="flex gap-2 overflow-x-auto no-scrollbar pt-1">
+          {(
+            [
+              ['all', 'All Active'],
+              ['owes_me', 'Owes Me'],
+              ['i_owe', 'I Owe'],
+              ['settled', 'Settled'],
+            ] as [FilterType, string][]
+          ).map(([f, label]) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
+                filter === f
+                  ? 'bg-indigo-500 text-white shadow-sm'
+                  : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-800 hover:bg-gray-100'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* People List */}
+      <div className="px-4 space-y-2">
+        {people.length === 0 ? (
+          <div className="text-center py-16 bg-white dark:bg-gray-900 rounded-3xl border border-gray-100 dark:border-gray-800 p-8 shadow-sm">
+            <div className="w-14 h-14 rounded-3xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-500 flex items-center justify-center mx-auto mb-3 shadow-md shadow-indigo-500/10">
+              <Users size={28} />
+            </div>
+            <h3 className="text-base font-bold text-gray-900 dark:text-white">
+              No people added yet
+            </h3>
+            <p className="text-xs text-gray-500 mt-1 max-w-xs mx-auto leading-relaxed mb-5">
+              Track money lent to or borrowed from roommates, friends, and family without cluttering your spending totals.
+            </p>
+            <button
+              onClick={() => setShowAddPersonModal(true)}
+              className="py-3 px-5 rounded-2xl bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-500/25 hover:bg-indigo-600 transition-all active:scale-95"
+            >
+              Add First Person
             </button>
           </div>
+        ) : activePeople.length === 0 && (filter !== 'all' || settledPeople.length === 0) ? (
+          <div className="text-center py-10 bg-white dark:bg-gray-900 rounded-3xl border border-gray-100 dark:border-gray-800 p-6">
+            <p className="text-xs font-semibold text-gray-500">No people match this filter</p>
+          </div>
         ) : (
-          <div className="space-y-3">
-            {persons.map(person => {
-              const b = balances.get(person.id) || {
-                netPaise: 0,
-                displayDirection: 'settled',
-                theyOweMePaise: 0,
-                iOweThemPaise: 0,
-                oldestUnsettledDays: null,
-                oldestUnsettledDate: null,
-                futurePendingPaise: 0,
-              };
-              const personEntries = ledgerEntries.filter(e => e.personId === person.id);
+          <div className="space-y-2">
+            {activePeople.map(person => {
+              const b = balancesMap.get(person.id);
+              const netPaise = b?.netPaise ?? 0;
+              const isTheyOwe = netPaise > 0;
+              const isIOwe = netPaise < 0;
 
               return (
-                <div key={person.id} className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-bold text-sm text-gray-900 dark:text-white">{person.name}</h3>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        {b.oldestUnsettledDays !== null ? `Oldest open: ${b.oldestUnsettledDays} days ago` : 'All settled ✨'}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-base font-bold ${
-                        b.netPaise > 0 ? 'text-emerald-500' : b.netPaise < 0 ? 'text-rose-500' : 'text-gray-400'
-                      }`}>
-                        {b.netPaise > 0 ? `+${formatINR(b.netPaise)}` : b.netPaise < 0 ? `-${formatINR(Math.abs(b.netPaise))}` : '₹0'}
-                      </p>
-                      <p className="text-[10px] text-gray-400 font-medium">
-                        {b.netPaise > 0 ? 'owes you' : b.netPaise < 0 ? 'you owe' : 'settled'}
-                      </p>
-                    </div>
-                  </div>
+                <motion.div
+                  key={person.id}
+                  layout
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  onClick={() => setSelectedPersonId(person.id)}
+                  className="bg-white dark:bg-gray-900 rounded-3xl p-4 border border-gray-100 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 transition-all cursor-pointer shadow-sm group"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    {/* Avatar + Name + Label */}
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className="w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-white text-sm shrink-0 shadow-sm"
+                        style={{ backgroundColor: person.color }}
+                      >
+                        {getPersonInitials(person.name)}
+                      </div>
 
-                  {/* Actions for this person */}
-                  {b.netPaise !== 0 && (
-                    <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex justify-end">
-                      <button onClick={() => handleSettleAll(person.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 text-xs font-semibold transition-colors">
-                        <CheckCircle2 size={14} /> Settle Up
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Recent entries list */}
-                  {personEntries.length > 0 && (
-                    <div className="mt-2 space-y-1.5">
-                      {personEntries.slice(0, 3).map(entry => (
-                        <div key={entry.id}
-                          className="text-xs p-2 rounded-xl flex items-center justify-between bg-gray-100/70 dark:bg-gray-800">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">
-                              {entry.direction === 'they_owe_me' ? 'Owed to you' : 'You owe'}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <h3 className="font-bold text-sm text-gray-900 dark:text-white truncate">
+                            {person.name}
+                          </h3>
+                          {person.nickname && (
+                            <span className="text-xs text-gray-400 font-medium">
+                              ({person.nickname})
                             </span>
-                            <span className="text-[10px] text-gray-400">({formatDate(entry.date)})</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`font-bold ${entry.direction === 'they_owe_me' ? 'text-emerald-500' : 'text-rose-500'}`}>
-                              {formatINR(entry.amount)}
-                            </span>
-                          </div>
+                          )}
+                          <span className="px-2 py-0.2 rounded-md text-[10px] font-semibold bg-gray-100 dark:bg-gray-800 text-gray-500">
+                            {person.label}
+                          </span>
                         </div>
-                      ))}
+
+                        <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400">
+                          {b && b.oldestUnsettledDays !== null ? (
+                            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-medium">
+                              <Clock size={11} />
+                              Oldest: {b.oldestUnsettledDays}d ago
+                            </span>
+                          ) : (
+                            <span>All caught up</span>
+                          )}
+                          {b?.futurePendingPaise !== 0 && (
+                            <span className="text-indigo-400">· Future scheduled</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </div>
+
+                    {/* Balance + Direction */}
+                    <div className="text-right shrink-0">
+                      <p
+                        className={`text-base font-extrabold ${
+                          isTheyOwe
+                            ? 'text-emerald-500'
+                            : isIOwe
+                            ? 'text-rose-500'
+                            : 'text-gray-400'
+                        }`}
+                      >
+                        {isTheyOwe ? '+' : isIOwe ? '-' : ''}
+                        {formatINR(Math.abs(netPaise))}
+                      </p>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                        {isTheyOwe ? 'owes you' : isIOwe ? 'you owe' : 'settled'}
+                      </p>
+                    </div>
+
+                    <ChevronRight size={16} className="text-gray-300 group-hover:text-gray-500 transition-colors shrink-0" />
+                  </div>
+                </motion.div>
               );
             })}
+          </div>
+        )}
+
+        {/* Collapsible Settled People Section */}
+        {filter === 'all' && settledPeople.length > 0 && (
+          <div className="pt-2">
+            <button
+              onClick={() => setShowSettledAccordion(!showSettledAccordion)}
+              className="w-full py-2.5 px-4 rounded-2xl bg-gray-100/70 dark:bg-gray-800/60 hover:bg-gray-200/70 text-xs font-bold text-gray-500 dark:text-gray-400 flex items-center justify-between transition-colors"
+            >
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 size={14} className="text-emerald-500" />
+                All Settled ({settledPeople.length})
+              </span>
+              <ChevronDown
+                size={16}
+                className={`transition-transform duration-200 ${
+                  showSettledAccordion ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            <AnimatePresence>
+              {showSettledAccordion && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="space-y-1.5 pt-2 overflow-hidden"
+                >
+                  {settledPeople.map(person => (
+                    <div
+                      key={person.id}
+                      onClick={() => setSelectedPersonId(person.id)}
+                      className="bg-white/60 dark:bg-gray-900/60 rounded-2xl p-3 border border-gray-100 dark:border-gray-800 flex items-center justify-between cursor-pointer hover:bg-white dark:hover:bg-gray-900 transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className="w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white text-xs opacity-80"
+                          style={{ backgroundColor: person.color }}
+                        >
+                          {getPersonInitials(person.name)}
+                        </div>
+                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                          {person.name}
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-bold text-gray-400">Settled (₹0)</span>
+                    </div>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         )}
       </div>
 
       {/* Add Person Modal */}
-      <AnimatePresence>
-        {showAddPersonModal && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50" onClick={() => setShowAddPersonModal(false)} />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[90vw] max-w-sm bg-white dark:bg-gray-900 rounded-2xl p-5 shadow-2xl">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-bold">Add Friend</h3>
-                <button onClick={() => setShowAddPersonModal(false)}><X size={18} /></button>
-              </div>
-              <input type="text" value={newPersonName} onChange={e => setNewPersonName(e.target.value)}
-                placeholder="Friend's Name (e.g. Rahul)" autoFocus
-                className="w-full px-4 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/30 mb-4" />
-              <div className="flex gap-2">
-                <button onClick={() => setShowAddPersonModal(false)}
-                  className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-semibold">Cancel</button>
-                <button onClick={handleAddPerson}
-                  className="flex-1 py-2.5 rounded-xl bg-indigo-500 text-white text-xs font-semibold hover:bg-indigo-600">Add</button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      <AddPersonModal
+        isOpen={showAddPersonModal}
+        onClose={() => setShowAddPersonModal(false)}
+        onPersonSaved={p => {
+          setSelectedPersonId(p.id);
+        }}
+      />
 
-      {/* Add Manual Ledger Entry Modal */}
-      <AnimatePresence>
-        {showAddEntryModal && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50" onClick={() => setShowAddEntryModal(false)} />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[90vw] max-w-sm bg-white dark:bg-gray-900 rounded-2xl p-5 shadow-2xl space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-bold">Log Owed Amount</h3>
-                <button onClick={() => setShowAddEntryModal(false)}><X size={18} /></button>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Friend</label>
-                <select value={selectedPersonId} onChange={e => setSelectedPersonId(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-xl text-sm font-medium outline-none">
-                  <option value="">Select a friend</option>
-                  {persons.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Direction</label>
-                <div className="flex gap-2">
-                  <button onClick={() => setEntryDirection('they_owe_me')}
-                    className={`flex-1 py-2 rounded-xl text-xs font-semibold ${
-                      entryDirection === 'they_owe_me' ? 'bg-emerald-500 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-800 text-gray-600'
-                    }`}>
-                    They owe me
-                  </button>
-                  <button onClick={() => setEntryDirection('i_owe_them')}
-                    className={`flex-1 py-2 rounded-xl text-xs font-semibold ${
-                      entryDirection === 'i_owe_them' ? 'bg-rose-500 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-800 text-gray-600'
-                    }`}>
-                    I owe them
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Amount (₹)</label>
-                <input type="number" value={entryAmount} onChange={e => setEntryAmount(e.target.value)}
-                  placeholder="350" autoFocus
-                  className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/30" />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button onClick={() => setShowAddEntryModal(false)}
-                  className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-semibold">Cancel</button>
-                <button onClick={handleAddManualEntry} disabled={!selectedPersonId || !entryAmount}
-                  className="flex-1 py-2.5 rounded-xl bg-indigo-500 text-white text-xs font-semibold hover:bg-indigo-600 disabled:opacity-40">Save</button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      {/* Lend / Borrow Sheet */}
+      <LendBorrowSheet
+        isOpen={showLendBorrowSheet}
+        onClose={() => setShowLendBorrowSheet(false)}
+        people={people}
+      />
     </div>
   );
 }
