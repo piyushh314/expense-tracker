@@ -4,9 +4,10 @@
 import { useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
-import type { TransactionFilter, DateRange } from '../types';
+import type { TransactionFilter, DateRange, Person } from '../types';
 import { useSettings } from '../contexts/SettingsContext';
 import { getCurrentMonth, getPreviousMonth } from '../utils/date';
+import { computePersonBalance } from '../utils/peopleLedger';
 
 export function useCategories(type?: 'expense' | 'income') {
   return useLiveQuery(async () => {
@@ -175,5 +176,62 @@ export function useCategoryUsageCount(): Map<string, number> {
     counts.set(t.categoryId, (counts.get(t.categoryId) || 0) + 1);
   });
   return counts;
+}
+
+export interface UnsettledPersonInfo {
+  person: Person;
+  netPaise: number;
+  oldestUnsettledDays: number | null;
+  displayDirection: 'owes_me' | 'i_owe' | 'settled';
+}
+
+export function usePeopleLedgerSummary() {
+  const people = useLiveQuery(() => db.persons.toArray()) ?? [];
+  const entries = useLiveQuery(() => db.ledgerEntries.toArray()) ?? [];
+  const settlements = useLiveQuery(() => db.settlements.toArray()) ?? [];
+
+  return useMemo(() => {
+    let totalOwedToMe = 0;
+    let totalIOwe = 0;
+    const balances = new Map<string, ReturnType<typeof computePersonBalance>>();
+    const unsettledPeople: UnsettledPersonInfo[] = [];
+
+    people.forEach(p => {
+      const b = computePersonBalance(p.id, entries, settlements);
+      balances.set(p.id, b);
+      if (b.netPaise !== 0) {
+        if (b.netPaise > 0) totalOwedToMe += b.netPaise;
+        else totalIOwe += Math.abs(b.netPaise);
+        if (!p.archived) {
+          unsettledPeople.push({
+            person: p,
+            netPaise: b.netPaise,
+            oldestUnsettledDays: b.oldestUnsettledDays,
+            displayDirection: b.displayDirection,
+          });
+        }
+      }
+    });
+
+    // Sort unsettled people: first by oldest unsettled days descending, then by largest amount
+    unsettledPeople.sort((a, b) => {
+      const daysA = a.oldestUnsettledDays ?? 0;
+      const daysB = b.oldestUnsettledDays ?? 0;
+      if (daysB !== daysA) return daysB - daysA;
+      return Math.abs(b.netPaise) - Math.abs(a.netPaise);
+    });
+
+    return {
+      people,
+      entries,
+      settlements,
+      balances,
+      totalOwedToMe,
+      totalIOwe,
+      netTotal: totalOwedToMe - totalIOwe,
+      unsettledPeople,
+      badgeCount: unsettledPeople.length,
+    };
+  }, [people, entries, settlements]);
 }
 

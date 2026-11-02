@@ -4,6 +4,7 @@ import { Home, List, BarChart3, Presentation, Settings, Plus, Wallet, Users, Mor
 import { SettingsProvider } from './contexts/SettingsContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { seedDatabase } from './db';
+import { usePeopleLedgerSummary } from './hooks/useDatabase';
 import HomeScreen from './screens/HomeScreen';
 import TransactionsScreen from './screens/TransactionsScreen';
 import InsightsScreen from './screens/InsightsScreen';
@@ -21,6 +22,7 @@ function AppContent() {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const { badgeCount } = usePeopleLedgerSummary();
 
   useEffect(() => {
     seedDatabase();
@@ -73,7 +75,12 @@ function AppContent() {
                     : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
                 }`}>
                 <item.icon size={18} />
-                {item.label}
+                <span className="flex-1 text-left">{item.label}</span>
+                {item.id === 'people' && badgeCount > 0 && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500 text-white">
+                    {badgeCount}
+                  </span>
+                )}
               </button>
             ))}
 
@@ -162,10 +169,15 @@ function AppContent() {
             </button>
 
             <button onClick={() => setMoreMenuOpen(true)}
-              className={`flex flex-col items-center gap-0.5 py-1 px-3 rounded-lg transition-all ${
+              className={`flex flex-col items-center gap-0.5 py-1 px-3 rounded-lg transition-all relative ${
                 ['present', 'budgets', 'people', 'settings'].includes(screen) ? 'text-indigo-500 font-semibold' : 'text-gray-400 dark:text-gray-500'
               }`}>
-              <MoreHorizontal size={20} strokeWidth={['present', 'budgets', 'people', 'settings'].includes(screen) ? 2.5 : 2} />
+              <div className="relative">
+                <MoreHorizontal size={20} strokeWidth={['present', 'budgets', 'people', 'settings'].includes(screen) ? 2.5 : 2} />
+                {badgeCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-500" />
+                )}
+              </div>
               <span className="text-[10px]">More</span>
             </button>
           </div>
@@ -206,8 +218,15 @@ function AppContent() {
                 </button>
 
                 <button onClick={() => { setScreen('people'); setMoreMenuOpen(false); }}
-                  className="p-3.5 rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/40 border border-emerald-100 dark:border-emerald-900 flex flex-col items-start gap-1 text-left">
-                  <Users size={20} className="text-emerald-500 mb-1" />
+                  className="p-3.5 rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/40 border border-emerald-100 dark:border-emerald-900 flex flex-col items-start gap-1 text-left relative">
+                  <div className="flex items-center justify-between w-full mb-1">
+                    <Users size={20} className="text-emerald-500" />
+                    {badgeCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold">
+                        {badgeCount} open
+                      </span>
+                    )}
+                  </div>
                   <span className="font-bold text-sm">People</span>
                   <span className="text-[11px] text-gray-500">Lend & owe ledger</span>
                 </button>

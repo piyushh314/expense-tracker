@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, SlidersHorizontal, X, Trash2, Copy, ArrowUpDown, AlertTriangle, Users } from 'lucide-react';
+import { Search, SlidersHorizontal, X, Trash2, Copy, ArrowUpDown, AlertTriangle, Users, HandCoins } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
@@ -11,7 +11,7 @@ import { useToast } from '../contexts/ToastContext';
 import { getEffectiveExpensePaise } from '../utils/peopleLedger';
 import { checkTransactionSettlements, deleteTransactionWithSplits } from '../utils/transactionLedger';
 import DynamicIcon from '../components/ui/DynamicIcon';
-import type { Transaction, TransactionType, Scope } from '../types';
+import type { Transaction, TransactionType, Scope, LedgerEntry } from '../types';
 import { v4 as uuid } from 'uuid';
 
 interface TransactionsScreenProps {
@@ -20,6 +20,11 @@ interface TransactionsScreenProps {
 
 type SortMode = 'newest' | 'oldest' | 'highest';
 type QuickRange = 'all' | 'this-week' | 'this-month' | 'last-month' | 'custom';
+type HistoryFilterType = TransactionType | 'all' | 'loans';
+
+export type HistoryItem =
+  | { kind: 'transaction'; txn: Transaction; date: string; createdAt: number }
+  | { kind: 'pure_loan'; loan: LedgerEntry; date: string; createdAt: number };
 
 export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) {
   const { settings } = useSettings();
@@ -27,6 +32,7 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
   const allCategories = useLiveQuery(() => db.categories.toArray()) ?? [];
   const paymentMethods = usePaymentMethods();
   const allPersons = usePersons();
+  const allLedgerEntries = useLiveQuery(() => db.ledgerEntries.toArray()) ?? [];
 
   const [search, setSearch] = useState('');
   const [showFilters, setShowFilters] = useState(false);
@@ -34,7 +40,7 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
   const [quickRange, setQuickRange] = useState<QuickRange>('this-month');
   const [filterCategoryIds, setFilterCategoryIds] = useState<string[]>([]);
   const [filterPaymentMethodIds, setFilterPaymentMethodIds] = useState<string[]>([]);
-  const [filterType, setFilterType] = useState<TransactionType | 'all'>('all');
+  const [filterType, setFilterType] = useState<HistoryFilterType>('all');
   const [filterScope, setFilterScope] = useState<Scope | 'all'>('all');
   const [showSortMenu, setShowSortMenu] = useState(false);
   const [deleteWarningTxn, setDeleteWarningTxn] = useState<Transaction | null>(null);
@@ -57,6 +63,22 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
     return m;
   }, [allPersons]);
 
+  const ledgerEntriesByTxnId = useMemo(() => {
+    const map = new Map<string, LedgerEntry[]>();
+    allLedgerEntries.forEach(e => {
+      if (e.transactionId) {
+        const list = map.get(e.transactionId) || [];
+        list.push(e);
+        map.set(e.transactionId, list);
+      }
+    });
+    return map;
+  }, [allLedgerEntries]);
+
+  const standaloneLoans = useMemo(() => {
+    return allLedgerEntries.filter(e => !e.transactionId && e.kind === 'loan');
+  }, [allLedgerEntries]);
+
   // Date range
   const dateRange = useMemo(() => {
     switch (quickRange) {
@@ -70,78 +92,124 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
   const allTransactions = useLiveQuery(() => db.transactions.orderBy('date').reverse().toArray()) ?? [];
 
   const filtered = useMemo(() => {
-    let results = [...allTransactions];
+    let items: HistoryItem[] = [];
 
+    // 1. Transactions
+    if (filterType !== 'loans') {
+      let txns = [...allTransactions];
+      if (filterType !== 'all') {
+        txns = txns.filter(t => t.type === filterType);
+      }
+      if (filterScope !== 'all') {
+        txns = txns.filter(t => t.scope === filterScope);
+      }
+      if (filterCategoryIds.length > 0) {
+        txns = txns.filter(t => filterCategoryIds.includes(t.categoryId));
+      }
+      if (filterPaymentMethodIds.length > 0) {
+        txns = txns.filter(t => filterPaymentMethodIds.includes(t.paymentMethodId));
+      }
+      items.push(...txns.map(t => ({ kind: 'transaction' as const, txn: t, date: t.date, createdAt: t.createdAt })));
+    }
+
+    // 2. Pure standalone loans (excluded from category / payment filters unless specified)
+    if (filterType === 'all' || filterType === 'loans') {
+      if (filterCategoryIds.length === 0 && filterPaymentMethodIds.length === 0 && filterScope === 'all') {
+        items.push(...standaloneLoans.map(l => ({ kind: 'pure_loan' as const, loan: l, date: l.date, createdAt: l.createdAt })));
+      }
+    }
+
+    // Filter by date range
     if (dateRange) {
-      results = results.filter(t => t.date >= dateRange.from && t.date <= dateRange.to);
+      items = items.filter(i => i.date >= dateRange.from && i.date <= dateRange.to);
     }
-    if (filterCategoryIds.length > 0) {
-      results = results.filter(t => filterCategoryIds.includes(t.categoryId));
-    }
-    if (filterPaymentMethodIds.length > 0) {
-      results = results.filter(t => filterPaymentMethodIds.includes(t.paymentMethodId));
-    }
-    if (filterType !== 'all') {
-      results = results.filter(t => t.type === filterType);
-    }
-    if (filterScope !== 'all') {
-      results = results.filter(t => t.scope === filterScope);
-    }
+
+    // Search query
     if (search) {
       const q = search.toLowerCase();
-      results = results.filter(t => {
-        const cat = catMap.get(t.categoryId);
-        return (
-          t.note.toLowerCase().includes(q) ||
-          t.tags.some(tag => tag.toLowerCase().includes(q)) ||
-          cat?.name.toLowerCase().includes(q) ||
-          String(t.amount / 100).includes(q)
-        );
+      items = items.filter(item => {
+        if (item.kind === 'transaction') {
+          const cat = catMap.get(item.txn.categoryId);
+          return (
+            item.txn.note.toLowerCase().includes(q) ||
+            item.txn.tags.some(tag => tag.toLowerCase().includes(q)) ||
+            cat?.name.toLowerCase().includes(q) ||
+            String(item.txn.amount / 100).includes(q)
+          );
+        } else {
+          const p = personMap.get(item.loan.personId);
+          return (
+            item.loan.note.toLowerCase().includes(q) ||
+            (p?.name.toLowerCase().includes(q) ?? false) ||
+            String(item.loan.amount / 100).includes(q)
+          );
+        }
       });
     }
 
     // Sort
     switch (sortMode) {
-      case 'newest': results.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt); break;
-      case 'oldest': results.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt); break;
+      case 'newest':
+        items.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+        break;
+      case 'oldest':
+        items.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+        break;
       case 'highest':
-        results.sort((a, b) => {
-          const valA = a.type === 'expense' ? getEffectiveExpensePaise(a) : a.amount;
-          const valB = b.type === 'expense' ? getEffectiveExpensePaise(b) : b.amount;
+        items.sort((a, b) => {
+          const valA = a.kind === 'transaction'
+            ? (a.txn.type === 'expense' ? getEffectiveExpensePaise(a.txn) : a.txn.amount)
+            : a.loan.amount;
+          const valB = b.kind === 'transaction'
+            ? (b.txn.type === 'expense' ? getEffectiveExpensePaise(b.txn) : b.txn.amount)
+            : b.loan.amount;
           return valB - valA;
         });
         break;
     }
 
-    return results;
-  }, [allTransactions, dateRange, filterCategoryIds, filterPaymentMethodIds, filterType, filterScope, search, sortMode, catMap]);
+    return items;
+  }, [allTransactions, standaloneLoans, dateRange, filterCategoryIds, filterPaymentMethodIds, filterType, filterScope, search, sortMode, catMap, personMap]);
 
   // Group by day
   const grouped = useMemo(() => {
-    const groups: { date: string; transactions: Transaction[]; total: number }[] = [];
+    const groups: { date: string; items: HistoryItem[]; total: number }[] = [];
     let currentDate = '';
-    let currentGroup: Transaction[] = [];
+    let currentGroup: HistoryItem[] = [];
     let currentTotal = 0;
 
-    filtered.forEach(t => {
-      const effAmt = t.type === 'expense' ? getEffectiveExpensePaise(t) : -t.amount;
-      if (t.date !== currentDate) {
+    filtered.forEach(item => {
+      // Pure loans have 0 impact on spending totals!
+      const effAmt = item.kind === 'transaction'
+        ? (item.txn.type === 'expense' ? getEffectiveExpensePaise(item.txn) : -item.txn.amount)
+        : 0;
+
+      if (item.date !== currentDate) {
         if (currentGroup.length > 0) {
-          groups.push({ date: currentDate, transactions: currentGroup, total: currentTotal });
+          groups.push({ date: currentDate, items: currentGroup, total: currentTotal });
         }
-        currentDate = t.date;
-        currentGroup = [t];
+        currentDate = item.date;
+        currentGroup = [item];
         currentTotal = effAmt;
       } else {
-        currentGroup.push(t);
+        currentGroup.push(item);
         currentTotal += effAmt;
       }
     });
     if (currentGroup.length > 0) {
-      groups.push({ date: currentDate, transactions: currentGroup, total: currentTotal });
+      groups.push({ date: currentDate, items: currentGroup, total: currentTotal });
     }
     return groups;
   }, [filtered]);
+
+  const handleDeleteLoan = async (loan: LedgerEntry) => {
+    await db.ledgerEntries.delete(loan.id);
+    showToast('Loan record removed', {
+      onUndo: async () => {
+        await db.ledgerEntries.add(loan);
+      },
+    });
+  };
 
   const executeDelete = async (txn: Transaction) => {
     const { undo, linkedCount } = await deleteTransactionWithSplits(txn);
@@ -265,8 +333,8 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
               {/* Type */}
               <div>
                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 block">Type</label>
-                <div className="flex gap-2">
-                  {([['all', 'All'], ['expense', 'Expense'], ['income', 'Income']] as [TransactionType | 'all', string][]).map(([type, label]) => (
+                <div className="flex gap-2 flex-wrap">
+                  {([['all', 'All'], ['expense', 'Expense'], ['income', 'Income'], ['loans', 'Loans']] as [HistoryFilterType, string][]).map(([type, label]) => (
                     <button key={type} onClick={() => setFilterType(type)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
                         filterType === type ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
@@ -322,17 +390,19 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
 
       {/* Results count */}
       <div className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
-        {filtered.length} transaction{filtered.length !== 1 ? 's' : ''}
-        {filtered.length > 0 && ` · Total: ${formatINR(filtered.filter(t => t.type === 'expense').reduce((s, t) => s + getEffectiveExpensePaise(t), 0))} spent`}
+        {filtered.length} {filtered.length === 1 ? 'item' : 'items'}
+        {filtered.length > 0 && ` · Total: ${formatINR(
+          filtered.reduce((sum, item) => (item.kind === 'transaction' && item.txn.type === 'expense' ? sum + getEffectiveExpensePaise(item.txn) : sum), 0)
+        )} spent`}
       </div>
 
-      {/* Transaction Groups */}
+      {/* Transaction & Loan Groups */}
       {grouped.length === 0 ? (
         <div className="text-center py-16 px-4">
           <div className="text-5xl mb-4">📝</div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">No transactions yet</h3>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">No entries found</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Tap the + button to add your first expense
+            Tap the + button to add your first expense or split
           </p>
         </div>
       ) : (
@@ -349,14 +419,85 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
                 </span>
               </div>
 
-              {/* Transactions */}
+              {/* Items */}
               <div className="space-y-1.5">
-                {group.transactions.map(txn => {
+                {group.items.map(item => {
+                  if (item.kind === 'pure_loan') {
+                    const loan = item.loan;
+                    const person = personMap.get(loan.personId);
+                    const isLent = loan.direction === 'they_owe_me';
+
+                    return (
+                      <motion.div
+                        key={loan.id}
+                        layout
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-white dark:bg-gray-900 rounded-2xl p-3.5 flex items-center gap-3 group border border-teal-100 dark:border-teal-900/60 hover:border-teal-200 dark:hover:border-teal-800 transition-all"
+                      >
+                        {/* Pure Loan Icon */}
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-teal-50 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400">
+                          <HandCoins size={20} />
+                        </div>
+
+                        {/* Details */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-bold text-gray-900 dark:text-white truncate">
+                              {isLent ? `Lent to ${person?.name || 'Friend'}` : `Borrowed from ${person?.name || 'Friend'}`}
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 font-bold shrink-0">
+                              Pure Loan
+                            </span>
+                          </div>
+                          {loan.note && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                              {loan.note}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <span className="text-[10px] text-gray-400 font-medium">
+                              Excluded from spending totals
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Amount */}
+                        <div className="text-right shrink-0">
+                          <span className="text-sm font-bold text-teal-600 dark:text-teal-400">
+                            {formatINR(loan.amount)}
+                          </span>
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                            {isLent ? 'they owe you' : 'you owe them'}
+                          </p>
+                        </div>
+
+                        {/* Delete action */}
+                        <div className="hidden group-hover:flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleDeleteLoan(loan);
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950 text-gray-400 hover:text-red-500 transition-colors"
+                            title="Delete loan record"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </motion.div>
+                    );
+                  }
+
+                  const txn = item.txn;
                   const cat = catMap.get(txn.categoryId);
                   const pm = pmMap.get(txn.paymentMethodId);
                   const payer = txn.paidBy && txn.paidBy !== 'me' ? personMap.get(txn.paidBy) : null;
                   const isSplit = txn.type === 'expense' && txn.splitMode && txn.splitMode !== 'none';
                   const effectivePaise = txn.type === 'expense' ? getEffectiveExpensePaise(txn) : txn.amount;
+                  const linked = ledgerEntriesByTxnId.get(txn.id) || [];
+                  const participantNames = linked.map(e => personMap.get(e.personId)?.name).filter(Boolean);
+                  const splitWithNames = participantNames.length > 0 ? participantNames.join(', ') : '';
 
                   return (
                     <motion.div
@@ -397,11 +538,13 @@ export default function TransactionsScreen({ onEdit }: TransactionsScreenProps) 
                         )}
                         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                           {isSplit && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 font-semibold flex items-center gap-1">
-                              <Users size={10} />
-                              {txn.mySharePaise !== undefined && txn.mySharePaise !== txn.amount
-                                ? `Total ${formatINR(txn.amount)}`
-                                : 'Split'}
+                            <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 font-semibold flex items-center gap-1">
+                              <Users size={11} className="shrink-0" />
+                              <span>
+                                {payer
+                                  ? `Paid by ${payer.name} · ${formatINR(txn.amount)}, your share ${formatINR(effectivePaise)}`
+                                  : `Split with ${splitWithNames || 'friend'} · ${formatINR(txn.amount)}, your share ${formatINR(effectivePaise)}`}
+                              </span>
                             </span>
                           )}
                           {txn.tags.slice(0, 3).map(tag => (

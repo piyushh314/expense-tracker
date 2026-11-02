@@ -1,14 +1,16 @@
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowRight, TrendingUp, Wallet, ShieldCheck } from 'lucide-react';
+import { ArrowRight, TrendingUp, Wallet, ShieldCheck, Users, X } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { formatINR } from '../utils/money';
 import { getCurrentMonth, getDaysRemaining, formatMonthYear, today } from '../utils/date';
-import { getEffectiveExpensePaise } from '../utils/peopleLedger';
+import { getEffectiveExpensePaise, getPersonInitials } from '../utils/peopleLedger';
+import { usePeopleLedgerSummary } from '../hooks/useDatabase';
 import { useSettings } from '../contexts/SettingsContext';
 import DynamicIcon from '../components/ui/DynamicIcon';
-import type { Transaction } from '../types';
+import SettleSheet from '../components/people/SettleSheet';
+import type { Transaction, Person } from '../types';
 
 interface HomeScreenProps {
   onNavigate: (screen: string) => void;
@@ -56,6 +58,15 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
     return cat ? { name: cat.name, amount: maxAmt, pct: totalSpent > 0 ? Math.round(maxAmt / totalSpent * 100) : 0, icon: cat.icon, color: cat.color } : null;
   }, [monthTxns, catMap, totalSpent]);
 
+  const peopleSummary = usePeopleLedgerSummary();
+  const [dismissedReminderPersonId, setDismissedReminderPersonId] = useState<string | null>(null);
+  const [settlePerson, setSettlePerson] = useState<Person | null>(null);
+
+  // Active top reminder: first unsettled person who isn't dismissed
+  const activeReminder = useMemo(() => {
+    return peopleSummary.unsettledPeople.find(u => u.person.id !== dismissedReminderPersonId) || null;
+  }, [peopleSummary.unsettledPeople, dismissedReminderPersonId]);
+
   const greeting = (() => {
     const h = new Date().getHours();
     if (h < 12) return 'Good morning';
@@ -70,6 +81,60 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
         <h1 className="text-xl font-bold">{greeting} 👋</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">{formatMonthYear(today())}</p>
       </div>
+
+      {/* Top In-App Reminder Card (e.g. "Rohit owes you 340 for 12 days") */}
+      {activeReminder && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-3.5 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/10 dark:from-amber-500/20 dark:via-orange-500/20 dark:to-amber-500/20 rounded-2xl border border-amber-200/80 dark:border-amber-800/80 shadow-sm"
+        >
+          <div className="flex items-center justify-between gap-2.5">
+            <div
+              className="flex items-center gap-3 cursor-pointer flex-1 min-w-0"
+              onClick={() => onNavigate('people')}
+            >
+              <div
+                className="w-9 h-9 rounded-full flex items-center justify-center font-bold text-white text-xs shrink-0 shadow-sm"
+                style={{ backgroundColor: activeReminder.person.color }}
+              >
+                {getPersonInitials(activeReminder.person.name)}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-amber-950 dark:text-amber-100 truncate">
+                  {activeReminder.netPaise > 0
+                    ? `${activeReminder.person.name} owes you ${formatINR(activeReminder.netPaise)}`
+                    : `You owe ${activeReminder.person.name} ${formatINR(Math.abs(activeReminder.netPaise))}`}
+                </p>
+                <p className="text-[11px] text-amber-700/90 dark:text-amber-300 font-medium mt-0.5">
+                  {activeReminder.oldestUnsettledDays !== null
+                    ? `for ${activeReminder.oldestUnsettledDays} days`
+                    : 'Unsettled balance'}
+                  {peopleSummary.unsettledPeople.length > 1 && (
+                    <span className="opacity-75"> · +{peopleSummary.unsettledPeople.length - 1} more</span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => setSettlePerson(activeReminder.person)}
+                className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm transition-all active:scale-95"
+              >
+                Settle
+              </button>
+              <button
+                onClick={() => setDismissedReminderPersonId(activeReminder.person.id)}
+                className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                title="Dismiss reminder"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Monthly Summary Card */}
       <motion.div
@@ -110,6 +175,41 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
           </button>
         )}
       </motion.div>
+
+      {/* People Summary Strip (shown if any balance != 0) */}
+      {(peopleSummary.totalOwedToMe > 0 || peopleSummary.totalIOwe > 0) && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          onClick={() => onNavigate('people')}
+          className="bg-white dark:bg-gray-900 rounded-2xl p-3.5 border border-gray-100 dark:border-gray-800 shadow-sm flex items-center justify-between cursor-pointer hover:border-gray-200 dark:hover:border-gray-700 transition-all active:scale-[0.99]"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold shrink-0">
+              <Users size={18} />
+            </div>
+            <div className="flex items-center gap-2 text-xs font-semibold flex-wrap">
+              {peopleSummary.totalOwedToMe > 0 && (
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  You are owed <span className="font-bold">{formatINR(peopleSummary.totalOwedToMe)}</span>
+                </span>
+              )}
+              {peopleSummary.totalOwedToMe > 0 && peopleSummary.totalIOwe > 0 && (
+                <span className="text-gray-300 dark:text-gray-700">·</span>
+              )}
+              {peopleSummary.totalIOwe > 0 && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  You owe <span className="font-bold">{formatINR(peopleSummary.totalIOwe)}</span>
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1 text-xs font-semibold text-gray-400 dark:text-gray-500 shrink-0 ml-2">
+            <span>People</span>
+            <ArrowRight size={14} />
+          </div>
+        </motion.div>
+      )}
 
       {/* Income vs Expenses (if income exists) */}
       {totalIncome > 0 && (
@@ -224,6 +324,16 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
         <ShieldCheck size={14} />
         <span>Your data stays on this device</span>
       </div>
+
+      {/* Quick Settle Sheet from Reminder Card */}
+      {settlePerson && (
+        <SettleSheet
+          isOpen={settlePerson !== null}
+          onClose={() => setSettlePerson(null)}
+          person={settlePerson}
+          netPaise={peopleSummary.balances.get(settlePerson.id)?.netPaise ?? 0}
+        />
+      )}
     </div>
   );
 }
