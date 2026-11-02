@@ -16,6 +16,10 @@ const defaultSettings: AppSettings = {
   lastUsedCategoryId: null,
   lastUsedPaymentMethodId: null,
   monthlyBudget: null,
+  defaultReminderDays: 7,
+  remindersEnabled: true,
+  remindersForDebtsIOwe: true,
+  userUpiId: '',
 };
 
 interface SettingsContextType {

@@ -7,7 +7,8 @@ import { db } from '../db';
 import { formatINR, toPaise } from '../utils/money';
 import { formatDate, today } from '../utils/date';
 import { useToast } from '../contexts/ToastContext';
-import type { Person, LedgerEntry } from '../types';
+import { computePersonBalance, getPersonAvatarColor } from '../utils/peopleLedger';
+import type { Person, LedgerEntry, Settlement } from '../types';
 
 export default function PeopleScreen() {
   const { showToast } = useToast();
@@ -18,45 +19,48 @@ export default function PeopleScreen() {
   // Add ledger entry states
   const [selectedPersonId, setSelectedPersonId] = useState('');
   const [entryAmount, setEntryAmount] = useState('');
-  const [entryDirection, setEntryDirection] = useState<'owed_to_me' | 'i_owe'>('owed_to_me');
+  const [entryDirection, setEntryDirection] = useState<'they_owe_me' | 'i_owe_them'>('they_owe_me');
 
   const persons = useLiveQuery(() => db.persons.toArray()) ?? [];
   const ledgerEntries = useLiveQuery(() => db.ledgerEntries.toArray()) ?? [];
+  const settlements = useLiveQuery(() => db.settlements.toArray()) ?? [];
 
-  // Group balances per person
+  // Group balances per person using pure accounting utility
   const balances = useMemo(() => {
-    const map = new Map<string, { owedToMe: number; iOwe: number; net: number; unsettledCount: number }>();
-    persons.forEach(p => map.set(p.id, { owedToMe: 0, iOwe: 0, net: 0, unsettledCount: 0 }));
-
-    ledgerEntries.forEach(entry => {
-      if (entry.settled) return;
-      const b = map.get(entry.personId) || { owedToMe: 0, iOwe: 0, net: 0, unsettledCount: 0 };
-      if (entry.direction === 'owed_to_me') {
-        b.owedToMe += entry.amount;
-        b.net += entry.amount;
-      } else {
-        b.iOwe += entry.amount;
-        b.net -= entry.amount;
-      }
-      b.unsettledCount++;
-      map.set(entry.personId, b);
+    const map = new Map<string, ReturnType<typeof computePersonBalance>>();
+    persons.forEach(p => {
+      map.set(p.id, computePersonBalance(p.id, ledgerEntries, settlements));
     });
-
     return map;
-  }, [persons, ledgerEntries]);
+  }, [persons, ledgerEntries, settlements]);
 
   // Overall totals
   const overallOwedToMe = useMemo(() => {
-    return ledgerEntries.filter(e => !e.settled && e.direction === 'owed_to_me').reduce((s, e) => s + e.amount, 0);
-  }, [ledgerEntries]);
+    let sum = 0;
+    balances.forEach(b => {
+      if (b.netPaise > 0) sum += b.netPaise;
+    });
+    return sum;
+  }, [balances]);
 
   const overallIOwe = useMemo(() => {
-    return ledgerEntries.filter(e => !e.settled && e.direction === 'i_owe').reduce((s, e) => s + e.amount, 0);
-  }, [ledgerEntries]);
+    let sum = 0;
+    balances.forEach(b => {
+      if (b.netPaise < 0) sum += Math.abs(b.netPaise);
+    });
+    return sum;
+  }, [balances]);
 
   const handleAddPerson = async () => {
     if (!newPersonName.trim()) return;
-    const person: Person = { id: uuid(), name: newPersonName.trim() };
+    const person: Person = {
+      id: uuid(),
+      name: newPersonName.trim(),
+      label: 'Friend',
+      color: getPersonAvatarColor(newPersonName.trim()),
+      archived: false,
+      createdAt: Date.now(),
+    };
     await db.persons.add(person);
     setNewPersonName('');
     setShowAddPersonModal(false);
@@ -70,11 +74,13 @@ export default function PeopleScreen() {
     const entry: LedgerEntry = {
       id: uuid(),
       personId: selectedPersonId,
-      transactionId: '',
-      amount: paise,
       direction: entryDirection,
-      settled: false,
+      kind: 'loan',
+      amount: paise,
       date: today(),
+      note: 'Manual loan / owed entry',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
     };
 
     await db.ledgerEntries.add(entry);
@@ -84,15 +90,22 @@ export default function PeopleScreen() {
   };
 
   const handleSettleAll = async (personId: string) => {
-    const entries = ledgerEntries.filter(e => e.personId === personId && !e.settled);
-    await Promise.all(entries.map(e => db.ledgerEntries.update(e.id, { settled: true })));
+    const b = balances.get(personId);
+    if (!b || b.netPaise === 0) return;
+
+    const settlement: Settlement = {
+      id: uuid(),
+      personId,
+      direction: b.netPaise > 0 ? 'they_paid_me' : 'i_paid_them',
+      amount: Math.abs(b.netPaise),
+      date: today(),
+      method: 'upi',
+      note: 'Full settlement',
+      createdAt: Date.now(),
+    };
+    await db.settlements.add(settlement);
     const person = persons.find(p => p.id === personId);
     showToast(`Settled with ${person?.name || 'person'}`);
-  };
-
-  const handleToggleEntrySettled = async (entry: LedgerEntry) => {
-    await db.ledgerEntries.update(entry.id, { settled: !entry.settled });
-    showToast(entry.settled ? 'Marked unsettled' : 'Marked settled');
   };
 
   return (
@@ -150,7 +163,15 @@ export default function PeopleScreen() {
         ) : (
           <div className="space-y-3">
             {persons.map(person => {
-              const b = balances.get(person.id) || { owedToMe: 0, iOwe: 0, net: 0, unsettledCount: 0 };
+              const b = balances.get(person.id) || {
+                netPaise: 0,
+                displayDirection: 'settled',
+                theyOweMePaise: 0,
+                iOweThemPaise: 0,
+                oldestUnsettledDays: null,
+                oldestUnsettledDate: null,
+                futurePendingPaise: 0,
+              };
               const personEntries = ledgerEntries.filter(e => e.personId === person.id);
 
               return (
@@ -159,27 +180,27 @@ export default function PeopleScreen() {
                     <div>
                       <h3 className="font-bold text-sm text-gray-900 dark:text-white">{person.name}</h3>
                       <p className="text-xs text-gray-400 mt-0.5">
-                        {b.unsettledCount > 0 ? `${b.unsettledCount} pending item${b.unsettledCount > 1 ? 's' : ''}` : 'All settled ✨'}
+                        {b.oldestUnsettledDays !== null ? `Oldest open: ${b.oldestUnsettledDays} days ago` : 'All settled ✨'}
                       </p>
                     </div>
                     <div className="text-right">
                       <p className={`text-base font-bold ${
-                        b.net > 0 ? 'text-emerald-500' : b.net < 0 ? 'text-rose-500' : 'text-gray-400'
+                        b.netPaise > 0 ? 'text-emerald-500' : b.netPaise < 0 ? 'text-rose-500' : 'text-gray-400'
                       }`}>
-                        {b.net > 0 ? `+${formatINR(b.net)}` : b.net < 0 ? `-${formatINR(Math.abs(b.net))}` : '₹0'}
+                        {b.netPaise > 0 ? `+${formatINR(b.netPaise)}` : b.netPaise < 0 ? `-${formatINR(Math.abs(b.netPaise))}` : '₹0'}
                       </p>
                       <p className="text-[10px] text-gray-400 font-medium">
-                        {b.net > 0 ? 'owes you' : b.net < 0 ? 'you owe' : 'settled'}
+                        {b.netPaise > 0 ? 'owes you' : b.netPaise < 0 ? 'you owe' : 'settled'}
                       </p>
                     </div>
                   </div>
 
                   {/* Actions for this person */}
-                  {b.unsettledCount > 0 && (
+                  {b.netPaise !== 0 && (
                     <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex justify-end">
                       <button onClick={() => handleSettleAll(person.id)}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 text-xs font-semibold transition-colors">
-                        <CheckCircle2 size={14} /> Settle All
+                        <CheckCircle2 size={14} /> Settle Up
                       </button>
                     </div>
                   )}
@@ -189,21 +210,17 @@ export default function PeopleScreen() {
                     <div className="mt-2 space-y-1.5">
                       {personEntries.slice(0, 3).map(entry => (
                         <div key={entry.id}
-                          onClick={() => handleToggleEntrySettled(entry)}
-                          className={`text-xs p-2 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
-                            entry.settled ? 'bg-gray-50 dark:bg-gray-800/50 opacity-50' : 'bg-gray-100/70 dark:bg-gray-800'
-                          }`}>
+                          className="text-xs p-2 rounded-xl flex items-center justify-between bg-gray-100/70 dark:bg-gray-800">
                           <div className="flex items-center gap-2">
-                            <span className={entry.settled ? 'line-through text-gray-400' : 'font-medium'}>
-                              {entry.direction === 'owed_to_me' ? 'Owed to you' : 'You owe'}
+                            <span className="font-medium">
+                              {entry.direction === 'they_owe_me' ? 'Owed to you' : 'You owe'}
                             </span>
                             <span className="text-[10px] text-gray-400">({formatDate(entry.date)})</span>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className={`font-bold ${entry.direction === 'owed_to_me' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                            <span className={`font-bold ${entry.direction === 'they_owe_me' ? 'text-emerald-500' : 'text-rose-500'}`}>
                               {formatINR(entry.amount)}
                             </span>
-                            {entry.settled && <span className="text-[10px] text-gray-400">Settled</span>}
                           </div>
                         </div>
                       ))}
@@ -269,15 +286,15 @@ export default function PeopleScreen() {
               <div>
                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Direction</label>
                 <div className="flex gap-2">
-                  <button onClick={() => setEntryDirection('owed_to_me')}
+                  <button onClick={() => setEntryDirection('they_owe_me')}
                     className={`flex-1 py-2 rounded-xl text-xs font-semibold ${
-                      entryDirection === 'owed_to_me' ? 'bg-emerald-500 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-800 text-gray-600'
+                      entryDirection === 'they_owe_me' ? 'bg-emerald-500 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-800 text-gray-600'
                     }`}>
                     They owe me
                   </button>
-                  <button onClick={() => setEntryDirection('i_owe')}
+                  <button onClick={() => setEntryDirection('i_owe_them')}
                     className={`flex-1 py-2 rounded-xl text-xs font-semibold ${
-                      entryDirection === 'i_owe' ? 'bg-rose-500 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-800 text-gray-600'
+                      entryDirection === 'i_owe_them' ? 'bg-rose-500 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-800 text-gray-600'
                     }`}>
                     I owe them
                   </button>

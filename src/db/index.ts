@@ -1,5 +1,7 @@
 // ============================================================
 // Dexie.js Database — IndexedDB wrapper for offline-first storage
+// Schema version 1: Initial schema
+// Schema version 2: Lend & Owe (People Ledger) with settlements & reminders
 // ============================================================
 import Dexie, { type Table } from 'dexie';
 import type {
@@ -10,8 +12,11 @@ import type {
   RecurringRule,
   Person,
   LedgerEntry,
+  Settlement,
+  LedgerReminder,
   SavingsGoal,
 } from '../types';
+import { getPersonAvatarColor } from '../utils/peopleLedger';
 
 export class ExpenseTrackerDB extends Dexie {
   transactions!: Table<Transaction, string>;
@@ -21,10 +26,14 @@ export class ExpenseTrackerDB extends Dexie {
   recurringRules!: Table<RecurringRule, string>;
   persons!: Table<Person, string>;
   ledgerEntries!: Table<LedgerEntry, string>;
+  settlements!: Table<Settlement, string>;
+  ledgerReminders!: Table<LedgerReminder, string>;
   savingsGoals!: Table<SavingsGoal, string>;
 
   constructor() {
     super('ExpenseTrackerDB');
+
+    // Version 1 (Preserved for backwards compatibility)
     this.version(1).stores({
       transactions: 'id, type, categoryId, paymentMethodId, date, [type+date], [categoryId+date], *tags, createdAt',
       categories: 'id, order, type, archived',
@@ -34,6 +43,84 @@ export class ExpenseTrackerDB extends Dexie {
       persons: 'id, name',
       ledgerEntries: 'id, personId, transactionId, settled',
       savingsGoals: 'id',
+    });
+
+    // Version 2: Lend and Owe (People Ledger)
+    this.version(2).stores({
+      transactions: 'id, type, categoryId, paymentMethodId, date, paidBy, [type+date], [categoryId+date], *tags, createdAt',
+      categories: 'id, order, type, archived',
+      paymentMethods: 'id, order, archived',
+      budgets: 'id, period, categoryId, [period+categoryId]',
+      recurringRules: 'id, nextDueDate, active',
+      persons: 'id, name, label, archived, createdAt',
+      ledgerEntries: 'id, personId, date, direction, kind, transactionId, splitGroupId, dueDate, createdAt',
+      settlements: 'id, personId, date, direction, createdAt',
+      ledgerReminders: 'id, personId, entryId, nextRemindAt, active',
+      savingsGoals: 'id',
+    }).upgrade(async tx => {
+      // 1. Upgrade persons table to new schema
+      await tx.table('persons').toCollection().modify((person: any) => {
+        if (!person.label) person.label = 'Friend';
+        if (!person.color) person.color = getPersonAvatarColor(person.name || 'Friend');
+        if (person.archived === undefined) person.archived = false;
+        if (!person.createdAt) person.createdAt = Date.now();
+      });
+
+      // 2. Migrate legacy ledger entries and extract settlements if previously marked settled
+      const legacyEntries = await tx.table('ledgerEntries').toArray();
+      const migratedSettlements: any[] = [];
+
+      for (const entry of legacyEntries) {
+        let direction = entry.direction;
+        if (direction === 'owed_to_me') direction = 'they_owe_me';
+        if (direction === 'i_owe') direction = 'i_owe_them';
+
+        const kind = entry.kind || (entry.transactionId ? 'shared_purchase' : 'loan');
+        const createdAt = entry.createdAt || Date.now();
+        const updatedAt = entry.updatedAt || createdAt;
+
+        // If previously marked as settled, create an explicit settlement record
+        if (entry.settled) {
+          const settlementId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : `settlement-migrated-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+          migratedSettlements.push({
+            id: settlementId,
+            personId: entry.personId,
+            direction: direction === 'they_owe_me' ? 'they_paid_me' : 'i_paid_them',
+            amount: entry.amount,
+            date: entry.date || new Date().toISOString().split('T')[0],
+            method: 'other',
+            note: 'Settled (migrated)',
+            createdAt: createdAt + 1,
+          });
+        }
+
+        await tx.table('ledgerEntries').update(entry.id, {
+          direction,
+          kind,
+          note: entry.note || '',
+          updatedAt,
+          createdAt,
+        });
+      }
+
+      if (migratedSettlements.length > 0) {
+        await tx.table('settlements').bulkAdd(migratedSettlements);
+      }
+
+      // 3. Migrate transactions with new fields
+      await tx.table('transactions').toCollection().modify((t: any) => {
+        if (!t.paidBy) t.paidBy = 'me';
+        if (t.totalPaise === undefined) t.totalPaise = t.amount;
+        if (t.mySharePaise === undefined) {
+          t.mySharePaise = t.splitInfo ? t.splitInfo.myShare : t.amount;
+        }
+        if (!t.splitMode) {
+          t.splitMode = t.splitInfo ? 'equally' : 'none';
+        }
+      });
     });
   }
 }
@@ -91,4 +178,3 @@ export async function seedDatabase() {
     await db.paymentMethods.bulkAdd(methods);
   }
 }
-

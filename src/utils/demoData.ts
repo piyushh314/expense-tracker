@@ -4,7 +4,8 @@
 import { db } from '../db';
 import { v4 as uuid } from 'uuid';
 import { subDays, format } from 'date-fns';
-import type { Transaction, Budget, Person, LedgerEntry } from '../types';
+import type { Transaction, Budget, Person, LedgerEntry, Settlement } from '../types';
+import { getPersonAvatarColor } from './peopleLedger';
 
 export async function loadDemoData() {
   const categories = await db.categories.toArray();
@@ -24,8 +25,26 @@ export async function loadDemoData() {
   const rahulId = uuid();
   const ananyaId = uuid();
   const persons: Person[] = [
-    { id: rahulId, name: 'Rahul (Hostel Roommate)' },
-    { id: ananyaId, name: 'Ananya (Project Partner)' },
+    {
+      id: rahulId,
+      name: 'Rahul Sharma',
+      nickname: 'Rahul',
+      phone: '9876543210',
+      label: 'Roommate',
+      color: getPersonAvatarColor('Rahul Sharma'),
+      archived: false,
+      createdAt: Date.now() - 86400000 * 30,
+    },
+    {
+      id: ananyaId,
+      name: 'Ananya Verma',
+      nickname: 'Ananya',
+      upiId: 'ananya@okaxis',
+      label: 'Friend',
+      color: getPersonAvatarColor('Ananya Verma'),
+      archived: false,
+      createdAt: Date.now() - 86400000 * 20,
+    },
   ];
 
   await db.persons.bulkPut(persons);
@@ -245,21 +264,40 @@ export async function loadDemoData() {
         personId: rahulId,
         transactionId: splitTxn.id,
         amount: 46700,
-        direction: 'owed_to_me',
-        settled: false,
+        direction: 'they_owe_me',
+        kind: 'shared_purchase',
         date: splitTxn.date,
+        note: 'Cafe dinner split with Rahul',
+        createdAt: Date.now() - 86400000 * 3,
+        updatedAt: Date.now() - 86400000 * 3,
       },
       {
         id: uuid(),
         personId: ananyaId,
         transactionId: splitTxn.id,
         amount: 46700,
-        direction: 'owed_to_me',
-        settled: true,
+        direction: 'they_owe_me',
+        kind: 'shared_purchase',
         date: splitTxn.date,
+        note: 'Cafe dinner split with Ananya',
+        createdAt: Date.now() - 86400000 * 3,
+        updatedAt: Date.now() - 86400000 * 3,
       },
     ];
     await db.ledgerEntries.bulkPut(ledgerEntries);
+
+    // Settlement for Ananya
+    const settlement: Settlement = {
+      id: uuid(),
+      personId: ananyaId,
+      direction: 'they_paid_me',
+      amount: 46700,
+      date: splitTxn.date,
+      method: 'upi',
+      note: 'UPI payment received for cafe dinner',
+      createdAt: Date.now() - 86400000 * 2,
+    };
+    await db.settlements.put(settlement);
   }
 
   // Monthly budget
@@ -275,3 +313,4 @@ export async function loadDemoData() {
 
   return txns.length;
 }
+

@@ -14,6 +14,8 @@ export interface DateRange {
   to: string;
 }
 
+export type SplitMode = 'none' | 'equally' | 'custom' | 'fully_theirs' | 'fully_mine';
+
 export interface SplitParticipant {
   personId: string;
   amount: number; // paise
@@ -37,6 +39,10 @@ export interface Transaction {
   tags: string[];
   scope: Scope;
   splitInfo?: SplitInfo;
+  paidBy?: 'me' | string; // 'me' or personId
+  mySharePaise?: number; // integer paise
+  totalPaise?: number; // integer paise
+  splitMode?: SplitMode;
   recurringRuleId?: string;
   receiptUrl?: string;
   createdAt: number; // timestamp ms
@@ -79,19 +85,60 @@ export interface RecurringRule {
   createdAt: number;
 }
 
+export type PersonLabel = 'Roommate' | 'Friend' | 'Family' | 'Other';
+
 export interface Person {
   id: string;
   name: string;
+  nickname?: string;
+  phone?: string;
+  upiId?: string;
+  label: PersonLabel;
+  color: string;
+  archived: boolean;
+  createdAt: number;
 }
+
+export type LedgerDirection = 'they_owe_me' | 'i_owe_them';
+export type LedgerKind = 'loan' | 'shared_purchase' | 'paid_for_them' | 'paid_for_me';
 
 export interface LedgerEntry {
   id: string;
   personId: string;
-  transactionId: string;
-  amount: number; // paise
-  direction: 'owed_to_me' | 'i_owe';
-  settled: boolean;
+  direction: LedgerDirection;
+  kind: LedgerKind;
+  amount: number; // integer paise
   date: string; // YYYY-MM-DD
+  note: string;
+  dueDate?: string; // YYYY-MM-DD
+  transactionId?: string;
+  splitGroupId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SettlementDirection = 'they_paid_me' | 'i_paid_them';
+export type SettlementMethod = 'upi' | 'cash' | 'other';
+
+export interface Settlement {
+  id: string;
+  personId: string;
+  direction: SettlementDirection;
+  amount: number; // integer paise
+  date: string; // YYYY-MM-DD
+  method: SettlementMethod;
+  note: string;
+  createdAt: number;
+}
+
+export interface LedgerReminder {
+  id: string;
+  personId: string;
+  entryId?: string | null; // null = whole person
+  nextRemindAt: string; // YYYY-MM-DD
+  repeatEveryDays?: number;
+  snoozedUntil?: string | null;
+  active: boolean;
 }
 
 export interface SavingsGoal {
@@ -113,6 +160,10 @@ export interface AppSettings {
   lastUsedCategoryId: string | null;
   lastUsedPaymentMethodId: string | null;
   monthlyBudget: number | null; // paise
+  defaultReminderDays: number; // default 7
+  remindersEnabled: boolean; // default true
+  remindersForDebtsIOwe: boolean; // default true
+  userUpiId?: string;
 }
 
 // For insight cards

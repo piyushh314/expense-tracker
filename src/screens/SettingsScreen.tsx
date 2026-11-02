@@ -175,9 +175,8 @@ export default function SettingsScreen() {
         <div className="bg-white dark:bg-gray-900 rounded-2xl p-1.5 flex border border-gray-100 dark:border-gray-800">
           {themeOptions.map(({ mode, icon: Icon, label }) => (
             <button key={mode} onClick={() => updateSettings({ theme: mode })}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                settings.theme === mode ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-500 dark:text-gray-400'
-              }`}>
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${settings.theme === mode ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-500 dark:text-gray-400'
+                }`}>
               <Icon size={16} /> {label}
             </button>
           ))}
