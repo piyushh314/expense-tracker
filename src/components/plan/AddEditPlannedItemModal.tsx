@@ -15,6 +15,7 @@ import { v4 as uuid } from 'uuid';
 import { db } from '../../db';
 import { toPaise, toRupees } from '../../utils/money';
 import { today } from '../../utils/date';
+import { generateOccurrences } from '../../utils/planForecast';
 import { useCategories, usePaymentMethods, usePersons } from '../../hooks/useDatabase';
 import { useToast } from '../../contexts/ToastContext';
 import DynamicIcon from '../ui/DynamicIcon';
@@ -62,12 +63,15 @@ export default function AddEditPlannedItemModal({
   const [linkedPersonId, setLinkedPersonId] = useState('');
   const [editScope, setEditScope] = useState<'single' | 'series'>('single');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [amountError, setAmountError] = useState(false);
 
   const activeCategories = kind === 'income_expected' ? incomeCategories : expenseCategories;
+  const isActualEdit = Boolean(editItem && editItem.id);
 
   useEffect(() => {
     if (isOpen) {
-      if (editItem) {
+      if (editItem && editItem.id) {
+        // Editing existing planned item
         setKind(editItem.kind);
         setTitle(editItem.title);
         setAmountStr(String(toRupees(editItem.amount)));
@@ -81,23 +85,28 @@ export default function AddEditPlannedItemModal({
         setNote(editItem.note || '');
         setEditScope('single');
       } else {
-        setKind(initialKind);
-        setTitle('');
-        setAmountStr('');
-        setAmountType('exact');
-        setDueDate(initialDueDate || today());
-        setCategoryId(activeCategories[0]?.id || '');
-        setPaymentMethodId('');
-        setRepeat(initialKind === 'bill' ? 'monthly' : 'none');
-        setCustomDayOfMonth(parseInt((initialDueDate || today()).split('-')[2], 10) || 1);
-        setReminderDaysBefore(3);
-        setNote('');
+        // Creating new planned item (possibly prefilled from CanIAffordThis or Calendar)
+        setKind(editItem?.kind || initialKind);
+        setTitle(editItem?.title || '');
+        setAmountStr(editItem?.amount ? String(toRupees(editItem.amount)) : '');
+        setAmountType(editItem?.amountType || 'exact');
+        setDueDate(editItem?.dueDate || initialDueDate || today());
+        setCategoryId(editItem?.categoryId || activeCategories[0]?.id || '');
+        setPaymentMethodId(editItem?.paymentMethodId || '');
+        setRepeat(editItem?.repeat || (initialKind === 'bill' ? 'monthly' : 'none'));
+        setCustomDayOfMonth(
+          editItem?.customDayOfMonth ||
+          parseInt((editItem?.dueDate || initialDueDate || today()).split('-')[2], 10) || 1
+        );
+        setReminderDaysBefore(editItem?.reminderDaysBefore ?? 3);
+        setNote(editItem?.note || '');
         setLinkedPersonId('');
         setEditScope('single');
       }
+      setAmountError(false);
       setDeleteConfirmOpen(false);
     }
-  }, [isOpen, editItem, initialKind]);
+  }, [isOpen, editItem, initialKind, initialDueDate]);
 
   useEffect(() => {
     if (!categoryId && activeCategories.length > 0) {
@@ -115,15 +124,29 @@ export default function AddEditPlannedItemModal({
 
   const handleSave = async () => {
     const amountVal = parseFloat(amountStr) || 0;
-    if (amountVal <= 0 || !title.trim()) {
-      showToast('Please enter a valid title and amount');
+    if (amountVal <= 0) {
+      setAmountError(true);
+      showToast('Please enter an amount greater than 0');
       return;
     }
 
-    const amountPaise = toPaise(amountVal);
-    const seriesId = editItem?.seriesId || uuid();
+    const effectiveCategoryId =
+      categoryId || (activeCategories.length > 0 ? activeCategories[0].id : '');
 
-    if (editItem) {
+    const selectedCategory = activeCategories.find(c => c.id === effectiveCategoryId);
+    const effectiveTitle =
+      title.trim() ||
+      selectedCategory?.name ||
+      (kind === 'income_expected'
+        ? 'Expected Income'
+        : kind === 'repayment_expected'
+        ? 'Expected Repayment'
+        : 'Planned Expense');
+
+    const amountPaise = toPaise(amountVal);
+    const seriesId = isActualEdit && editItem ? (editItem.seriesId || editItem.id) : uuid();
+
+    if (isActualEdit && editItem) {
       if (editScope === 'series' && editItem.seriesId) {
         // Update all future occurrences in series
         await db.plannedItems
@@ -131,10 +154,10 @@ export default function AddEditPlannedItemModal({
           .equals(editItem.seriesId)
           .and(p => p.dueDate >= editItem.dueDate && p.status === 'upcoming')
           .modify({
-            title: title.trim(),
+            title: effectiveTitle,
             amount: amountPaise,
             amountType,
-            categoryId,
+            categoryId: effectiveCategoryId,
             paymentMethodId: paymentMethodId || undefined,
             repeat,
             customDayOfMonth: repeat === 'custom_day' ? customDayOfMonth : undefined,
@@ -147,11 +170,11 @@ export default function AddEditPlannedItemModal({
         // Update only this occurrence
         await db.plannedItems.update(editItem.id, {
           kind,
-          title: title.trim(),
+          title: effectiveTitle,
           amount: amountPaise,
           amountType,
           dueDate,
-          categoryId,
+          categoryId: effectiveCategoryId,
           paymentMethodId: paymentMethodId || undefined,
           repeat,
           customDayOfMonth: repeat === 'custom_day' ? customDayOfMonth : undefined,
@@ -164,11 +187,11 @@ export default function AddEditPlannedItemModal({
       onSaved?.({
         ...editItem,
         kind,
-        title: title.trim(),
+        title: effectiveTitle,
         amount: amountPaise,
         amountType,
         dueDate,
-        categoryId,
+        categoryId: effectiveCategoryId,
         paymentMethodId: paymentMethodId || undefined,
         repeat,
         customDayOfMonth: repeat === 'custom_day' ? customDayOfMonth : undefined,
@@ -181,11 +204,11 @@ export default function AddEditPlannedItemModal({
       const newItem: PlannedItem = {
         id: uuid(),
         kind,
-        title: title.trim(),
+        title: effectiveTitle,
         amount: amountPaise,
         amountType,
         dueDate,
-        categoryId,
+        categoryId: effectiveCategoryId,
         paymentMethodId: paymentMethodId || undefined,
         repeat,
         customDayOfMonth: repeat === 'custom_day' ? customDayOfMonth : undefined,
@@ -197,7 +220,23 @@ export default function AddEditPlannedItemModal({
         updatedAt: Date.now(),
       };
       await db.plannedItems.add(newItem);
-      showToast('Added to plan');
+
+      // If repeating, generate ~3 months ahead of occurrences safely
+      if (repeat !== 'none') {
+        const threeMonthsDate = new Date(dueDate + 'T00:00:00');
+        threeMonthsDate.setMonth(threeMonthsDate.getMonth() + 3);
+        const untilDate = threeMonthsDate.toISOString().split('T')[0];
+        const existingOccurrences = await db.plannedItems.where('seriesId').equals(seriesId).toArray();
+        const existingDates = new Set(existingOccurrences.map(o => o.dueDate));
+        existingDates.add(dueDate);
+
+        const futureItems = generateOccurrences(newItem, untilDate, existingDates, () => uuid());
+        if (futureItems.length > 0) {
+          await db.plannedItems.bulkAdd(futureItems);
+        }
+      }
+
+      showToast(`Added "${effectiveTitle}" to plan`);
       onSaved?.(newItem);
     }
 
@@ -241,7 +280,7 @@ export default function AddEditPlannedItemModal({
               {/* Header */}
               <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
                 <h2 className="text-base font-bold">
-                  {editItem ? 'Edit Planned Item' : 'Add Planned Item'}
+                  {isActualEdit ? 'Edit Planned Item' : 'Add Planned Item'}
                 </h2>
                 <button
                   onClick={onClose}
@@ -329,10 +368,18 @@ export default function AddEditPlannedItemModal({
                       type="number"
                       step="any"
                       value={amountStr}
-                      onChange={e => setAmountStr(e.target.value)}
+                      onChange={e => {
+                        setAmountStr(e.target.value);
+                        if (amountError) setAmountError(false);
+                      }}
                       placeholder="0.00"
-                      className="w-full px-3.5 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl text-base font-bold outline-none focus:ring-2 focus:ring-indigo-500/30"
+                      className={`w-full px-3.5 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl text-base font-bold outline-none focus:ring-2 focus:ring-indigo-500/30 ${
+                        amountError ? 'ring-2 ring-red-500 border border-red-500' : ''
+                      }`}
                     />
+                    {amountError && (
+                      <p className="text-[10px] text-red-500 font-bold mt-1">Please enter an amount</p>
+                    )}
                   </div>
 
                   <div>
@@ -492,7 +539,7 @@ export default function AddEditPlannedItemModal({
                 </div>
 
                 {/* Edit Series Scope (if editing recurring item) */}
-                {editItem && editItem.seriesId && (
+                {isActualEdit && editItem?.seriesId && (
                   <div className="p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-xl border border-indigo-200 dark:border-indigo-800">
                     <p className="text-xs font-bold text-indigo-800 dark:text-indigo-300 mb-1.5">
                       Recurring Item Changes
@@ -526,7 +573,7 @@ export default function AddEditPlannedItemModal({
 
                 {/* Actions */}
                 <div className="flex items-center gap-3 pt-2">
-                  {editItem && (
+                  {isActualEdit && (
                     <button
                       type="button"
                       onClick={() => setDeleteConfirmOpen(true)}
@@ -540,7 +587,7 @@ export default function AddEditPlannedItemModal({
                     onClick={handleSave}
                     className="flex-1 py-3 rounded-xl gradient-primary text-white font-bold text-sm shadow-md shadow-indigo-500/20 active:scale-95 transition-all"
                   >
-                    {editItem ? 'Save Changes' : 'Add to Plan'}
+                    {isActualEdit ? 'Save Changes' : 'Add to Plan'}
                   </button>
                 </div>
 

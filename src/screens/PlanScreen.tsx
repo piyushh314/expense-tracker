@@ -89,7 +89,50 @@ export default function PlanScreen() {
   }, [todayStr]);
 
   // Live queries
-  const allPlannedItems = useLiveQuery(() => db.plannedItems.orderBy('dueDate').toArray()) ?? [];
+  const rawPlannedItems = useLiveQuery(() => db.plannedItems.toArray()) ?? [];
+  const allPlannedItems = useMemo(() => {
+    return [...rawPlannedItems].sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+  }, [rawPlannedItems]);
+
+  // Check for any transactions recorded in the future
+  const futureTransactions = useLiveQuery(
+    () => db.transactions.where('date').above(todayStr).toArray(),
+    [todayStr]
+  ) ?? [];
+
+  const unlinkedFutureTxns = useMemo(() => {
+    const linkedTxnIds = new Set(allPlannedItems.map(p => p.linkedTransactionId).filter(Boolean));
+    return futureTransactions.filter(t => !linkedTxnIds.has(t.id));
+  }, [futureTransactions, allPlannedItems]);
+
+  const handleConvertFutureTxns = async () => {
+    if (unlinkedFutureTxns.length === 0) return;
+    const itemsToAdd: PlannedItem[] = unlinkedFutureTxns.map(t => {
+      const cat = catMap.get(t.categoryId);
+      return {
+        id: uuid(),
+        kind: t.type === 'income' ? 'income_expected' : 'one_off',
+        title: t.note || cat?.name || (t.type === 'income' ? 'Expected Income' : 'Upcoming Expense'),
+        amount: t.amount,
+        amountType: 'exact',
+        dueDate: t.date,
+        categoryId: t.categoryId,
+        paymentMethodId: t.paymentMethodId || undefined,
+        repeat: 'none',
+        reminderDaysBefore: 3,
+        note: t.note || '',
+        status: 'upcoming',
+        seriesId: uuid(),
+        createdAt: t.createdAt || Date.now(),
+        updatedAt: Date.now(),
+      };
+    });
+
+    await db.plannedItems.bulkAdd(itemsToAdd);
+    await db.transactions.bulkDelete(unlinkedFutureTxns.map(t => t.id));
+    showToast(`Converted ${itemsToAdd.length} future transaction(s) to Plan`);
+  };
+
   const categories = useLiveQuery(() => db.categories.where('archived').equals(0).sortBy('order')) ?? [];
   const catMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories]);
   const expenseCategories = useMemo(() => categories.filter(c => c.type === 'expense'), [categories]);
@@ -613,6 +656,37 @@ export default function PlanScreen() {
       {/* ======================================================== */}
       {activeTab === 'timeline' && (
         <div className="space-y-4">
+          {/* Future Transactions Notice & Convert Banner */}
+          {unlinkedFutureTxns.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="p-3.5 bg-indigo-50 dark:bg-indigo-950/40 rounded-2xl border border-indigo-200 dark:border-indigo-800 space-y-2"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-indigo-100 dark:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold">
+                    <Sparkles size={15} />
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-indigo-950 dark:text-indigo-100 block">
+                      Found {unlinkedFutureTxns.length} future-dated expense{unlinkedFutureTxns.length > 1 ? 's' : ''}
+                    </span>
+                    <span className="text-[11px] text-indigo-600 dark:text-indigo-400">
+                      Convert to planned items to show in upcoming timeline & forecast
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleConvertFutureTxns}
+                  className="px-3 py-1.5 rounded-xl gradient-primary text-white text-xs font-bold shadow-sm active:scale-95 transition-all"
+                >
+                  Move to Plan
+                </button>
+              </div>
+            </motion.div>
+          )}
+
           {/* Summary Cards */}
           <div className="grid grid-cols-3 gap-2.5">
             <div className="bg-white dark:bg-gray-900 p-3 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm">

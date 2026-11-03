@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ChevronDown, ChevronUp, Calendar, Hash, Sparkles, Users, UserPlus, AlertTriangle } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Calendar, CalendarClock, Hash, Sparkles, Users, UserPlus, AlertTriangle } from 'lucide-react';
 import { v4 as uuid } from 'uuid';
 import { db } from '../db';
 import { toPaise, formatINR, evaluateMathExpression } from '../utils/money';
-import { today } from '../utils/date';
+import { today, formatDateShort } from '../utils/date';
 import { parseSmartText } from '../utils/smartParser';
 import {
   useCategories,
@@ -58,6 +58,7 @@ export default function QuickAdd({
   const [categoryId, setCategoryId] = useState('');
   const [paymentMethodId, setPaymentMethodId] = useState('');
   const [date, setDate] = useState(today());
+  const [saveToPlan, setSaveToPlan] = useState(true);
   const [note, setNote] = useState('');
   const [tagsStr, setTagsStr] = useState('');
   const [scope, setScope] = useState<Scope>('personal');
@@ -66,6 +67,8 @@ export default function QuickAdd({
   const [addAnother, setAddAnother] = useState(false);
   const [noteFocused, setNoteFocused] = useState(false);
   const [smartText, setSmartText] = useState('');
+
+  const isFutureDate = date > today();
 
   // Who paid and who shares state
   const [paidBy, setPaidBy] = useState<'me' | string>('me');
@@ -134,6 +137,7 @@ export default function QuickAdd({
     setCategoryId(settings.lastUsedCategoryId || (categories[0]?.id ?? ''));
     setPaymentMethodId(settings.lastUsedPaymentMethodId || (paymentMethods[0]?.id ?? ''));
     setDate(today());
+    setSaveToPlan(true);
     setNote('');
     setTagsStr('');
     setScope('personal');
@@ -329,6 +333,44 @@ export default function QuickAdd({
   const handleSave = async () => {
     if (effectiveAmount <= 0 || !categoryId || !splitComputation.isValid) return;
 
+    // If future-dated and user opted to save to Plan (or by default for future items)
+    if (isFutureDate && saveToPlan && !editTransaction && !payPlannedItem) {
+      const selectedCat = categories.find(c => c.id === categoryId);
+      const effectiveTitle =
+        note.trim() ||
+        selectedCat?.name ||
+        (txnType === 'income' ? 'Expected Income' : 'Upcoming Expense');
+
+      const plannedItem: PlannedItem = {
+        id: uuid(),
+        kind: txnType === 'income' ? 'income_expected' : 'one_off',
+        title: effectiveTitle,
+        amount: totalPaise,
+        amountType: 'exact',
+        dueDate: date,
+        categoryId,
+        paymentMethodId: paidBy === 'me' ? paymentMethodId || undefined : undefined,
+        repeat: 'none',
+        reminderDaysBefore: 3,
+        note: note.trim(),
+        status: 'upcoming',
+        seriesId: uuid(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      await db.plannedItems.add(plannedItem);
+      showToast(`Added "${effectiveTitle}" to Plan for ${formatDateShort(date)}`);
+
+      if (addAnother) {
+        resetForm();
+        setTimeout(() => amountRef.current?.focus(), 100);
+      } else {
+        onClose();
+      }
+      return;
+    }
+
     const tags = tagsStr.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean);
 
     const txn: Transaction = {
@@ -519,21 +561,51 @@ export default function QuickAdd({
                 </div>
 
                 {/* Date */}
-                <div className="px-5 pb-3 flex gap-3">
-                  <div className="flex-1">
-                    <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                      Date
-                    </label>
-                    <div className="relative">
-                      <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                      <input
-                        type="date"
-                        value={date}
-                        onChange={e => setDate(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/30"
-                      />
-                    </div>
+                <div className="px-5 pb-3">
+                  <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                    Date
+                  </label>
+                  <div className="relative">
+                    <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="date"
+                      value={date}
+                      onChange={e => setDate(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/30"
+                    />
                   </div>
+
+                  {/* Future Date Helper Prompt */}
+                  {isFutureDate && !editTransaction && !payPlannedItem && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mt-2.5 p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-2xl border border-indigo-200 dark:border-indigo-800 flex items-center justify-between text-xs"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-indigo-100 dark:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                          <CalendarClock size={16} />
+                        </div>
+                        <div>
+                          <p className="font-bold text-indigo-950 dark:text-indigo-100">
+                            Future Date: Add to Plan & Forecast
+                          </p>
+                          <p className="text-[11px] text-indigo-600 dark:text-indigo-400">
+                            Tracks as an upcoming expense for {formatDateShort(date)}
+                          </p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-2">
+                        <input
+                          type="checkbox"
+                          checked={saveToPlan}
+                          onChange={e => setSaveToPlan(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-gray-300 dark:bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                      </label>
+                    </motion.div>
+                  )}
                 </div>
 
                 {/* WHO PAID AND WHO SHARES (Expense only) */}
@@ -1010,13 +1082,19 @@ export default function QuickAdd({
                       categoryId &&
                       splitComputation.isValid &&
                       (txnType !== 'expense' || paidBy === 'me' || paidBy)
-                        ? txnType === 'expense'
+                        ? isFutureDate && saveToPlan && !editTransaction && !payPlannedItem
+                          ? 'gradient-primary text-white shadow-indigo-500/30'
+                          : txnType === 'expense'
                           ? 'bg-red-500 hover:bg-red-600 text-white shadow-red-500/30'
                           : 'bg-green-500 hover:bg-green-600 text-white shadow-green-500/30'
                         : 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
                     }`}
                   >
-                    {editTransaction ? 'Update' : 'Save'}{' '}
+                    {editTransaction
+                      ? 'Update'
+                      : isFutureDate && saveToPlan && !payPlannedItem
+                      ? 'Add to Plan'
+                      : 'Save'}{' '}
                     {effectiveAmount > 0 ? (
                       splitMode !== 'none' && txnType === 'expense' ? (
                         <>
