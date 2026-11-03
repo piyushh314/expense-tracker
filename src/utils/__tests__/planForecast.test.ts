@@ -518,5 +518,62 @@ describe('Plan Forecast & Recurring Calculation Utilities', () => {
       expect(billsCard).toBeDefined();
       expect(billsCard?.message).toBe('Upcoming bills in the next 30 days: ₹5,200.');
     });
+
+    it('prevents projection explosion when a planned bill (e.g. Rent 15,000) is paid on Day 2 of the month', () => {
+      // Scenario: Budget is 25,000. Rent of 15,000 was paid on Day 2. Plus 1,000 spent on food.
+      // Total spent = 16,000. Days elapsed = 2. Days left = 28.
+      // Under the naive formula: 16,000 / 2 days = 8,000/day -> 8,000 * 28 = 224,000 (total > 2.4 Lakhs!)
+      // Under the corrected formula: variable spend so far = 16,000 - 15,000 = 1,000.
+      // Rent is NOT multiplied by 28 days!
+      const forecast = calculateMonthForecast({
+        monthlyBudgetPaise: 25000 * 100,
+        spentSoFarPaise: 16000 * 100,
+        plannedItems: [
+          {
+            id: 'plan-rent-1',
+            title: 'House Rent',
+            amount: 15000 * 100,
+            actualAmount: 15000 * 100,
+            amountType: 'exact',
+            dueDate: '2026-11-02',
+            categoryId: 'cat-rent',
+            repeat: 'monthly',
+            reminderDaysBefore: 3,
+            note: 'November rent',
+            status: 'paid',
+            kind: 'bill',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        currentMonthRange: { from: '2026-11-01', to: '2026-11-30' },
+        daysElapsedSoFar: 2,
+        daysLeftInMonth: 28,
+      });
+
+      // The month-end projection must remain sensible (around ~25,000 to ~29,000), NOT 200,000+!
+      expect(forecast.projectedMonthEndSpendPaise).toBeLessThan(35000 * 100);
+      expect(forecast.projectedMonthEndSpendPaise).toBeGreaterThan(16000 * 100);
+      expect(forecast.projectionRangePaise.high).toBeLessThan(40000 * 100);
+    });
+
+    it('damps daily variable spend on Day 3 so a single grocery purchase does not blow up projections', () => {
+      // Scenario: Budget is 20,000. On Day 3, user spent 3,000 (stocking groceries for 2 weeks).
+      // Days elapsed = 3. Days left = 27.
+      // Naive formula: 3,000 / 3 = 1,000/day -> 1,000 * 27 = 27,000 -> Total: 30,000+
+      // Damped formula: Blends actual pace with the budgeted daily pace.
+      const forecast = calculateMonthForecast({
+        monthlyBudgetPaise: 20000 * 100,
+        spentSoFarPaise: 3000 * 100,
+        plannedItems: [],
+        currentMonthRange: { from: '2026-11-01', to: '2026-11-30' },
+        daysElapsedSoFar: 3,
+        daysLeftInMonth: 27,
+      });
+
+      // Must project close to the planned budget (~20,000 to ~26,000)
+      expect(forecast.projectedMonthEndSpendPaise).toBeLessThan(27000 * 100);
+      expect(forecast.projectedMonthEndSpendPaise).toBeGreaterThan(15000 * 100);
+    });
   });
 });

@@ -145,9 +145,9 @@ export default function PlanScreen() {
     [range.from, range.to]
   ) ?? [];
 
-  // Spending calculations
+  // Spending calculations (only includes transactions up to today)
   const totalSpentPaise = monthTxns
-    .filter(t => t.type === 'expense')
+    .filter(t => t.type === 'expense' && t.date <= todayStr)
     .reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
 
   const spentByCategory = useMemo(() => {

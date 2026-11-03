@@ -29,6 +29,7 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
   const { settings } = useSettings();
   const range = getCurrentMonth(settings.monthStartDay);
   const daysLeft = getDaysRemaining(range);
+  const todayStr = today();
 
   const categories = useLiveQuery(() => db.categories.toArray()) ?? [];
   const catMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories]);
@@ -46,7 +47,10 @@ export default function HomeScreen({ onNavigate, onAddNew, onEditTransaction }: 
     () => db.transactions.orderBy('createdAt').reverse().limit(5).toArray()
   ) ?? [];
 
-  const totalSpent = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
+  // Spent so far only includes expenses up to today (excludes future-dated transactions)
+  const totalSpent = monthTxns
+    .filter(t => t.type === 'expense' && t.date <= todayStr)
+    .reduce((s, t) => s + getEffectiveExpensePaise(t), 0);
   const totalIncome = monthTxns.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
   const budgetAmount = settings.monthlyBudget || 0;
   const budgetPct = budgetAmount > 0 ? Math.round((totalSpent / budgetAmount) * 100) : 0;

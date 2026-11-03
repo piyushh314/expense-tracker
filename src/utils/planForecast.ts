@@ -244,6 +244,7 @@ export function calculateMonthForecast(params: {
   } = params;
 
   let unpaidPlannedExpensesThisMonthPaise = 0;
+  let paidPlannedExpensesThisMonthPaise = 0;
   let expectedIncomeThisMonthPaise = 0;
   let expectedRepaymentsThisMonthPaise = 0;
 
@@ -265,6 +266,10 @@ export function calculateMonthForecast(params: {
       } else if (item.kind === 'repayment_expected') {
         expectedRepaymentsThisMonthPaise += item.amount;
       }
+    } else if (item.status === 'paid' && isDueInMonth) {
+      if (item.kind === 'bill' || item.kind === 'one_off') {
+        paidPlannedExpensesThisMonthPaise += (item.actualAmount ?? item.amount);
+      }
     }
   }
 
@@ -277,10 +282,40 @@ export function calculateMonthForecast(params: {
   });
 
   // Month-end projection
-  // Variable spend = spend so far; daily average pace = spend so far / elapsed days
+  // Variable spend = spend so far minus paid planned bills (which are fixed 1-time commitments)
+  const variableSpentSoFarPaise = Math.max(0, spentSoFarPaise - paidPlannedExpensesThisMonthPaise);
+
+  // Month duration & remaining future days calculation
+  const startD = new Date(currentMonthRange.from + 'T00:00:00');
+  const endD = new Date(currentMonthRange.to + 'T00:00:00');
+  const totalDaysInMonth = Math.max(1, Math.round((endD.getTime() - startD.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+
+  // Remaining days to project: days left in month that haven't elapsed yet
+  const remainingDays = Math.max(0, Math.min(daysLeftInMonth, totalDaysInMonth - daysElapsedSoFar));
+
+  // Calculate daily variable pace with early-month stabilization
   const elapsed = Math.max(1, daysElapsedSoFar);
-  const dailyVariableAvgPaise = Math.round(spentSoFarPaise / elapsed);
-  const remainingDays = Math.max(0, daysLeftInMonth);
+  const observedDailyVariablePacePaise = Math.round(variableSpentSoFarPaise / elapsed);
+
+  let dailyVariableAvgPaise: number;
+  if (daysElapsedSoFar >= 7 || !monthlyBudgetPaise || monthlyBudgetPaise <= 0) {
+    // If at least 7 days have passed, use observed pace.
+    // If no budget is set, use a minimum divisor of 3 for early days to prevent single-day spikes
+    const effectiveElapsed = monthlyBudgetPaise ? elapsed : Math.max(3, elapsed);
+    dailyVariableAvgPaise = Math.round(variableSpentSoFarPaise / effectiveElapsed);
+  } else {
+    // During first 6 days of the month, blend observed pace with the budgeted variable pace
+    // to prevent early-month lump-sum grocery/shopping trips from exploding the month-end projection
+    const totalPlannedThisMonthPaise = paidPlannedExpensesThisMonthPaise + unpaidPlannedExpensesThisMonthPaise;
+    const variableBudgetPaise = Math.max(0, monthlyBudgetPaise - totalPlannedThisMonthPaise);
+    const budgetedDailyPacePaise = Math.round(variableBudgetPaise / totalDaysInMonth);
+
+    // Observed weight transitions smoothly from Day 1 to Day 7
+    const observedWeight = Math.min(1.0, Math.max(0, daysElapsedSoFar / 7));
+    dailyVariableAvgPaise = Math.round(
+      observedWeight * observedDailyVariablePacePaise + (1 - observedWeight) * budgetedDailyPacePaise
+    );
+  }
 
   const projectedVariablePaise = dailyVariableAvgPaise * remainingDays;
   const expectedMonthEndSpendPaise = spentSoFarPaise + unpaidPlannedExpensesThisMonthPaise + projectedVariablePaise;
